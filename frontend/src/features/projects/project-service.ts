@@ -424,9 +424,9 @@ let initialization: Promise<void> | undefined
 function callProjectBackend<T>(methodName: string, ...args: unknown[]) {
   const backend = (
     window as Window & {
-      go?: { main?: { App?: Record<string, unknown> } }
+      go?: { core?: { App?: Record<string, unknown> } }
     }
-  ).go?.main?.App
+  ).go?.core?.App
   const method = backend?.[methodName]
   if (typeof method !== "function") {
     return Promise.reject(new Error(`${methodName} is not available`))
@@ -440,9 +440,9 @@ function callAvailableProjectBackend<T>(
 ) {
   const backend = (
     window as Window & {
-      go?: { main?: { App?: Record<string, unknown> } }
+      go?: { core?: { App?: Record<string, unknown> } }
     }
-  ).go?.main?.App
+  ).go?.core?.App
   const methodName = methodNames.find(
     (candidate) => typeof backend?.[candidate] === "function",
   )

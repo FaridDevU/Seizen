@@ -597,49 +597,49 @@ function App() {
 
                   <CommandList id="command-results" className="command-results">
                     <CommandEmpty>
-                      <Search className=”mx-auto mb-3 size-5 opacity-45” />
-                      We found no results for “{query}”.
+                      <Search className="mx-auto mb-3 size-5 opacity-45" />
+                      We found no results for "{query}".
                     </CommandEmpty>
 
                     {!isBrowsing && (
-                      <CommandGroup heading=”Recent”>
+                      <CommandGroup heading="Recent">
                         {[folderEntries[0], resourceEntries[0]].map(renderEntry)}
                       </CommandGroup>
                     )}
 
                     {!isBrowsing && <CommandSeparator />}
 
-                    {(activeFilter === “all” || activeFilter === “folders”) &&
+                    {(activeFilter === "all" || activeFilter === "folders") &&
                       isBrowsing && (
-                        <CommandGroup heading=”Folders”>
+                        <CommandGroup heading="Folders">
                           {folderEntries.map(renderEntry)}
                         </CommandGroup>
                       )}
 
-                    {(activeFilter === “all” || activeFilter === “resources”) &&
+                    {(activeFilter === "all" || activeFilter === "resources") &&
                       isBrowsing && (
-                        <CommandGroup heading=”Resources”>
+                        <CommandGroup heading="Resources">
                           {resourceEntries.map(renderEntry)}
                         </CommandGroup>
                       )}
 
-                    {activeFilter === “all” && (
-                      <CommandGroup heading=”Navigation”>
+                    {activeFilter === "all" && (
+                      <CommandGroup heading="Navigation">
                         {navigationEntries.map(renderEntry)}
                       </CommandGroup>
                     )}
 
-                    {(activeFilter === “all” || activeFilter === “actions”) && (
-                      <CommandGroup heading=”Quick actions”>
+                    {(activeFilter === "all" || activeFilter === "actions") && (
+                      <CommandGroup heading="Quick actions">
                         {actionEntries.map(renderEntry)}
                       </CommandGroup>
                     )}
                   </CommandList>
 
-                  <div className=”hidden items-center gap-4 border-t border-[var(--outline-variant)] px-4 py-2.5 text-[0.68rem] text-[var(--on-surface-variant)] sm:flex”>
+                  <div className="hidden items-center gap-4 border-t border-[var(--outline-variant)] px-4 py-2.5 text-[0.68rem] text-[var(--on-surface-variant)] sm:flex">
                     <span><kbd>↑↓</kbd> navigate</span>
                     <span><kbd>↵</kbd> open</span>
-                    <span className=”ml-auto”><kbd>Esc</kbd> close</span>
+                    <span className="ml-auto"><kbd>Esc</kbd> close</span>
                   </div>
                 </div>
               )}
