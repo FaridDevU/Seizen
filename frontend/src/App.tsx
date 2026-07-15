@@ -25,7 +25,7 @@ import {
   ConfirmClose,
   GetAppearance,
   SetAppearance,
-} from "../wailsjs/go/main/App"
+} from "../wailsjs/go/core/App"
 import { EventsOn, WindowToggleMaximise } from "../wailsjs/runtime/runtime"
 import { Button } from "@/components/ui/button"
 import {

@@ -16,8 +16,8 @@ import {
   InstallWSLDistribution,
   SetDefaultWSLDistribution,
   SetEditorIntegrationEnabled,
-} from "../../wailsjs/go/main/App"
-import type { main } from "../../wailsjs/go/models"
+} from "../../wailsjs/go/core/App"
+import type { core } from "../../wailsjs/go/models"
 import {
   projectService,
   type AgentResourceSettings,
@@ -62,7 +62,7 @@ const agentUnrestrictedLabels: Record<string, string> = {
 }
 
 function ResourcesPanel() {
-  const [integrations, setIntegrations] = useState<main.EditorIntegration[]>([])
+  const [integrations, setIntegrations] = useState<core.EditorIntegration[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
@@ -70,7 +70,7 @@ function ResourcesPanel() {
   const [error, setError] = useState<string | null>(null)
   const [reload, setReload] = useState(0)
   const [distributions, setDistributions] = useState<
-    main.WSLDistributionResource[]
+    core.WSLDistributionResource[]
   >([])
   const [wslLoading, setWslLoading] = useState(true)
   const [wslSaving, setWslSaving] = useState<string | null>(null)
@@ -146,7 +146,7 @@ function ResourcesPanel() {
     }
   }, [reload])
 
-  const setEnabled = async (integration: main.EditorIntegration) => {
+  const setEnabled = async (integration: core.EditorIntegration) => {
     setSaving(integration.id)
     setError(null)
     try {
@@ -173,7 +173,7 @@ function ResourcesPanel() {
     }
   }
 
-  const selectWSL = async (distribution: main.WSLDistributionResource) => {
+  const selectWSL = async (distribution: core.WSLDistributionResource) => {
     if (distribution.selected) return
     setWslSaving(distribution.id)
     setWslError(null)
@@ -186,7 +186,7 @@ function ResourcesPanel() {
     }
   }
 
-  const installWSL = async (distribution: main.WSLDistributionResource) => {
+  const installWSL = async (distribution: core.WSLDistributionResource) => {
     setWslInstalling(distribution.id)
     setWslError(null)
     try {

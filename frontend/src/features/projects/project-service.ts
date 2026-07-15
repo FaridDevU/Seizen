@@ -24,7 +24,7 @@ import {
   StopProjectTerminal,
   WriteProjectTerminal,
   WriteProjectTerminalBinary,
-} from "../../../wailsjs/go/main/App"
+} from "../../../wailsjs/go/core/App"
 import type { TerminalShell } from "./workspace-model"
 
 export type ProjectSource = "created" | "imported" | "git"

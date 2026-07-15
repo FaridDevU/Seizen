@@ -53,8 +53,8 @@ import {
   MoveNativeEditor,
   StartNativeEditor,
   StopProjectEditor,
-} from "../../../wailsjs/go/main/App"
-import type { main } from "../../../wailsjs/go/models"
+} from "../../../wailsjs/go/core/App"
+import type { core } from "../../../wailsjs/go/models"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -324,7 +324,7 @@ function ProjectWorkspace({
   })
   const [selectedAppId, setSelectedAppId] = useState("")
   const [editorIntegrations, setEditorIntegrations] = useState<
-    main.EditorIntegration[]
+    core.EditorIntegration[]
   >([])
   const [workspaceMenu, setWorkspaceMenu] = useState<{
     x: number
@@ -379,7 +379,7 @@ function ProjectWorkspace({
   const editorSessionNodesRef = useRef(new Map<string, string>())
   const preparedEditorRef = useRef<{
     generation: number
-    promise: Promise<main.EditorSession>
+    promise: Promise<core.EditorSession>
   } | null>(null)
   const pendingEditorExitsRef = useRef(
     new Map<string, { exitCode: number; error: string }>(),
@@ -663,7 +663,7 @@ function ProjectWorkspace({
     )
     const native = integration ? !integration.embedded : editorId !== "vscode"
     try {
-      let session: main.EditorSession
+      let session: core.EditorSession
       if (native) {
         session = await StartNativeEditor(project.path, editorId)
       } else {
@@ -1389,7 +1389,7 @@ function ProjectWorkspace({
     launchEditor(node.id, node.editorId)
   }
 
-  const addEditor = (editor: main.EditorIntegration) => {
+  const addEditor = (editor: core.EditorIntegration) => {
     if (!editor.available) {
       setNotice({
         tone: "error",
