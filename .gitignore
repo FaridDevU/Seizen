@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/bin/
+tools_db_query_tmp/
+frontend/package.json.md5
+*.exe
+nul
+.DS_Store
+*.local
+*.log
+.env
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

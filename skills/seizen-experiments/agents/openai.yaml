@@ -1,0 +1,4 @@
+interface:
+  display_name: "Seizen Experiment Guard"
+  short_description: "Detects risky changes before editing"
+  default_prompt: "Use $seizen-experiments to evaluate this change and decide whether it requires an experiment."

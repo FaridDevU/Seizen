@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Seizen",
+  "outputfilename": "Seizen",
+  "frontend:dir": "frontend",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "info": {
+    "companyName": "Seizen",
+    "productName": "Seizen",
+    "productVersion": "0.1.0",
+    "comments": "Desktop project library"
+  },
+  "author": {
+    "name": "Seizen"
+  }
+}
