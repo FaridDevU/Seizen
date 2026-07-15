@@ -7,21 +7,13 @@ rendered in the native WebView.
 
 ## Demo
 
-Open a project from the local library:
+Enter a project and fill its workspace with Claude Code, Codex, and VS Code:
 
-![Opening a project](.github/media/demo-open-project.gif)
+![Workspace with AI agents and VS Code](.github/media/demo-workspace-agents.gif)
 
-Right-click the canvas to add AI agents and terminals:
+Switch between projects — each keeps its own panels (here Zed and Spotify):
 
-![Workspace panels](.github/media/demo-workspace.gif)
-
-Embedded browser alongside your terminals:
-
-![Browser panel](.github/media/demo-browser.gif)
-
-Manage editors, AI agents, and WSL environments from Resources:
-
-![Resources](.github/media/demo-resources.gif)
+![Switching projects](.github/media/demo-switch-projects.gif)
 
 ## Development
 
