@@ -83,3 +83,13 @@ build/           Packaging assets (icon, installer, manifest)
 skills/          Agent skills shipped with the app
 infra/           Coder-on-Incus workspace template (optional)
 ```
+
+## License
+
+Seizen is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (Attribution-NonCommercial-ShareAlike).
+
+- **Attribution** — you must give credit to the original author ([FaridDevU](https://github.com/FaridDevU)).
+- **NonCommercial** — you may not use this project for commercial purposes.
+- **ShareAlike** — if you remix or build upon it, you must distribute your contributions under the same license.
+
+See [LICENSE](LICENSE) for the full text. For commercial licensing, contact the author.
