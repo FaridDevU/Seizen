@@ -47,6 +47,13 @@ var workspaceAssistantTools = []anthropic.ToolUnionParam{
 		}},
 	}},
 	{OfTool: &anthropic.ToolParam{
+		Name:        "open_editor",
+		Description: anthropic.String("Open a code editor over the project folder. Only the editors listed as installed in the system prompt work."),
+		InputSchema: anthropic.ToolInputSchemaParam{Properties: map[string]any{
+			"editor": map[string]any{"type": "string", "description": "Editor id from the installed list, e.g. zed, vscode, cursor."},
+		}},
+	}},
+	{OfTool: &anthropic.ToolParam{
 		Name:        "tidy",
 		Description: anthropic.String("Arrange the board's panels neatly."),
 		InputSchema: anthropic.ToolInputSchemaParam{Properties: map[string]any{}},
@@ -103,5 +110,17 @@ func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt string) (Assistant
 		return AssistantChatReply{}, errors.New("unknown project")
 	}
 	system := workspaceAssistantPrompt(name, path)
+	if integrations, integrationsErr := a.GetEditorIntegrations(); integrationsErr == nil {
+		installed := []string{}
+		for _, editor := range integrations {
+			if editor.Available {
+				installed = append(installed, editor.ID)
+			}
+		}
+		if len(installed) > 0 {
+			system += "\nEditors installed on this computer (usable with open_editor): " +
+				strings.Join(installed, ", ") + "\n"
+		}
+	}
 	return a.runAssistantTurn(config, chatID, prompt, name, system, workspaceAssistantTools)
 }

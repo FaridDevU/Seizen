@@ -2345,6 +2345,7 @@ function ProjectWorkspace({
       const task = typeof input.task === "string" ? input.task.split("\n")[0].trim() : ""
       return task ? `${shell}: ${task.slice(0, 40)}` : `${shell} terminal`
     }
+    if (action.name === "open_editor") return `Editor: ${String(input.editor ?? "")}`
     if (action.name === "add_note") return "Note added"
     if (action.name === "add_todo") return "Checklist added"
     if (action.name === "open_browser") return "Browser opened"
@@ -2365,6 +2366,16 @@ function ProjectWorkspace({
       addTodo(input.items.filter((item): item is string => typeof item === "string"))
     } else if (action.name === "open_browser" && typeof input.url === "string") {
       addBrowser(normalizeBrowserURL(input.url))
+    } else if (action.name === "open_editor" && typeof input.editor === "string") {
+      const wanted = input.editor.toLowerCase()
+      const integration = editorIntegrations.find(
+        (editor) => editor.id === wanted || editor.name.toLowerCase() === wanted,
+      )
+      if (integration) {
+        addEditor(integration)
+      } else {
+        setNotice({ tone: "error", message: `${input.editor} is not installed here` })
+      }
     } else if (action.name === "tidy") {
       tidyAll()
     }
