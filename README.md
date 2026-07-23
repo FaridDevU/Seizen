@@ -30,6 +30,19 @@ No window juggling. Open a project and its whole working environment comes back 
 
 Everything below is captured from the real, compiled app — no mockups.
 
+### Talk to your app
+The Home bar is an assistant. Ask, and it opens projects, adds panels, or answers — the oval morphs into a conversation with per-chat history. Each chat is an isolated AI session that resumes on demand: nothing runs in the background between messages. While it thinks, the whole window glows with your chosen palette, Apple-Intelligence style.
+
+<div align="center"><img src=".github/media/assistant-chat.jpg" alt="The Home bar morphed into an assistant conversation" width="720" /></div>
+
+### A project chat that reads your code
+Every workspace has its own assistant in the bottom bar. It sees the project's files and reads the code itself to answer analysis questions right in the chat. For real work it delegates: "analyze the project and open two terminals working in parallel" fans the work out to isolated agent terminals, each titled by its task, each reporting results back to the board as a note — and the chat tells you when they finish. It can also mount servers and isolated experiments through the agents' Seizen tools, open editors, and clean up panels.
+
+### Your subscription is the brain
+No API key needed: connect your existing Claude (Pro/Max) or ChatGPT subscription through its official CLI with an elegant in-app sign-in — no terminals ever appear. Or drop in an Anthropic API key if you prefer. Pick the model per provider.
+
+<div align="center"><img src=".github/media/agent-apis.jpg" alt="Agent APIs: subscription providers and model choice" width="720" /></div>
+
 ### One canvas per project
 Enter a project and build its workspace: AI agents, editors, and terminals as panels you drag, resize, and arrange like windows on a desk.
 
@@ -51,8 +64,9 @@ Manage where each AI agent runs (per-agent WSL distribution or Windows), whether
 
 - **[Wails](https://wails.io)** (Go) — native Windows shell; React renders in the system WebView, no browser bundled
 - **Real agent terminals** — Claude Code, Codex, and OpenCode run in managed WSL 2 distributions (or Windows CMD) with per-project profiles and an MCP bridge into Seizen's tools
-- **Native editor embedding** — Zed and other native editors are re-parented into the canvas via Win32 and pinned to their panel
-- **Local-first** — a single SQLite database in `%APPDATA%\Seizen`; projects stay plain folders on disk
+- **Native editors, detached** — Zed and other native editors open as real OS windows (fullscreen and minimize just work); the canvas keeps a small controller card per editor
+- **Assistant with disposable brains** — chat memory lives in the CLI's own session files (`claude -p --resume` / `codex exec resume`); the process dies after every turn and each chat is an isolated session
+- **Local-first** — a single SQLite database in `%APPDATA%\Seizen`; projects live in a protected vault and export as plain ZIPs
 
 ---
 
