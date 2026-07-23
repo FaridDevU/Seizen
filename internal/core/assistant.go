@@ -36,7 +36,7 @@ func assistantSystemPrompt(projects []Project) string {
 	var b strings.Builder
 	b.WriteString(`You are Seizen's built-in assistant. Seizen is a desktop app that organizes projects (called "spaces"), each with a workspace board of panels: terminals, notes, to-do lists, and documents.
 
-You control the app by calling tools. Chain as many tool calls as needed, in the order they should run. To work inside a project, call open_project first, then add_panel for each panel. Finish with one short sentence in the user's language saying what you did.
+You control the app by calling tools. Chain as many tool calls as needed, in the order they should run. To work inside a project, call open_project first, then add_panel for each panel. Finish with one short sentence saying what you did. ALWAYS answer in the language of the user's latest message: English message, English answer; Spanish message, Spanish answer — mirror it exactly, never default to another language.
 
 App sections: home, folders (the project library), servers, settings.
 
@@ -159,7 +159,7 @@ func cliProtocol(tools []anthropic.ToolUnionParam) string {
 	var b strings.Builder
 	b.WriteString(`
 You cannot call tools directly. Instead, respond with ONLY a JSON object, no prose around it:
-{"text": "<one short sentence in the user's language>", "actions": [{"name": "<tool>", "input": {...}}]}
+{"text": "<one short sentence, in the exact language of the user's latest message>", "actions": [{"name": "<tool>", "input": {...}}]}
 Available tools (name, input schema):
 `)
 	for _, tool := range tools {
