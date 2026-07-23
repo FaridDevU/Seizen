@@ -775,7 +775,18 @@ export const projectService = {
     shell: Extract<TerminalShell, "codex" | "claude">,
     appId: string,
     experimentId = "",
+    task = "",
   ) {
+    if (task) {
+      return callProjectBackend<string>(
+        "StartProjectAgentTerminalTask",
+        project.id,
+        experimentId,
+        shell,
+        appId,
+        task,
+      )
+    }
     return callProjectBackend<string>(
       "StartProjectAgentTerminalContext",
       project.id,

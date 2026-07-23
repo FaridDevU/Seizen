@@ -155,6 +155,10 @@ func managedWindowsAgentCommand(agent, projectPath string, bridge *agentTerminal
 			{agentBridgeURLEnv, bridge.URL},
 			{agentBridgeTokenEnv, bridge.Token},
 		})
+		if bridge.Task != "" {
+			// The CLIs take an initial prompt as their positional argument.
+			launchArgs = append(launchArgs, bridge.Task)
+		}
 	}
 	executable := filepath.Join(codexBin, "codex.exe")
 	installURL := "https://chatgpt.com/codex/install.ps1"
@@ -262,6 +266,10 @@ func managedWSLAgentCommand(agent, projectPath string, bridge agentTerminalBridg
 		}
 	} else {
 		return nil, errors.New("the agent must be codex, claude, or opencode")
+	}
+	if bridge.Task != "" {
+		// The CLIs take an initial prompt as their positional argument.
+		launchArgs = append(launchArgs, bridge.Task)
 	}
 	script := managedWSLAgentScript(agent, codexWSL, claudeWSL, opencodeConfigWSL, bridge, launchArgs)
 	return &terminalCommand{

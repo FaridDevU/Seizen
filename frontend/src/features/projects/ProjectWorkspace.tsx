@@ -51,6 +51,7 @@ import {
   WindowToggleMaximise,
 } from "../../../wailsjs/runtime/runtime"
 import {
+  AskWorkspaceAssistant,
   ControlSpotifyPlayback,
   GetSpotifyPlaybackSince,
   GetEditorIntegrations,
@@ -60,6 +61,7 @@ import {
   StopProjectEditor,
 } from "../../../wailsjs/go/core/App"
 import type { core } from "../../../wailsjs/go/models"
+import { AssistantChat, type ChatMessage, type ChatSize } from "@/components/AssistantChat"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -141,6 +143,8 @@ type TerminalNode = StoredTerminalNode & {
   sessionId?: string
   status: TerminalStatus
   error?: string
+  // First line of the task the assistant delegated here; shown as the panel title.
+  taskHint?: string
 }
 
 type BrowserNode = StoredBrowserNode
@@ -934,6 +938,7 @@ function ProjectWorkspace({
     shell: TerminalShell,
     generation = workspaceGeneration.current,
     subfolder = "",
+    task = "",
   ): Promise<string | undefined> => {
     const cancellationKey = `${generation}:${id}`
     try {
@@ -944,6 +949,7 @@ function ProjectWorkspace({
               shell,
               selectedAppId,
               activeContext.experimentId,
+              task,
             )
           : subfolder
             ? await projectService.startProjectTerminalInFolder(
@@ -1029,8 +1035,9 @@ function ProjectWorkspace({
     shell: TerminalShell,
     generation = workspaceGeneration.current,
     subfolder = "",
+    task = "",
   ) => {
-    const start = startTerminal(id, shell, generation, subfolder)
+    const start = startTerminal(id, shell, generation, subfolder, task)
     terminalStartPromisesRef.current.add(start)
     void start.finally(() => terminalStartPromisesRef.current.delete(start))
     return start
@@ -1701,7 +1708,7 @@ function ProjectWorkspace({
     }
   }
 
-  const addTerminal = (shell: TerminalShell, region?: StoredRegion) => {
+  const addTerminal = (shell: TerminalShell, region?: StoredRegion, task = "") => {
     ensureNodeCapacity()
     clearGeometryHistory()
     const id = workspaceID(shell)
@@ -1717,6 +1724,7 @@ function ProjectWorkspace({
           size,
         )
       : centeredPosition(size.width, size.height)
+    const taskHint = task.split("\n")[0].trim().slice(0, 60)
     const node: TerminalNode = {
       id,
       type: "terminal",
@@ -1725,6 +1733,7 @@ function ProjectWorkspace({
       ...size,
       z: Math.max(0, ...nodesRef.current.map((item) => item.z)) + 1,
       status: "starting",
+      ...(taskHint ? { taskHint } : {}),
       ...(region ? { regionId: region.id } : {}),
     }
     closedTerminalNodesRef.current.delete(id)
@@ -1738,6 +1747,7 @@ function ProjectWorkspace({
         shell,
         workspaceGeneration.current,
         region?.cwd ?? "",
+        task,
       ),
     }
   }
@@ -2014,13 +2024,16 @@ function ProjectWorkspace({
     }
   }, [])
 
-  const runQuickAction = (action: WorkspaceQuickAction) => {
+  const runQuickAction = (action: WorkspaceQuickAction, shell?: string) => {
     try {
       if (action === "note") addNote()
       else if (action === "todo") addTodo()
       else if (action === "document") void addDocument()
       else if (action === "tidy") tidyAll()
-      else addTerminal("wsl")
+      else
+        addTerminal(
+          shell && shell in terminalTitles ? (shell as TerminalShell) : "wsl",
+        )
     } catch (error) {
       setNotice({ tone: "error", message: errorMessage(error) })
     }
@@ -2036,7 +2049,7 @@ function ProjectWorkspace({
       if (!loadedRef.current || canvasRef.current?.offsetParent === null) return
       detail.claim()
       if (projectMode !== "workspace") setProjectMode("workspace")
-      runQuickActionRef.current(detail.action)
+      runQuickActionRef.current(detail.action, detail.shell)
     }
     window.addEventListener(workspaceActionEvent, onAction)
     return () => window.removeEventListener(workspaceActionEvent, onAction)
@@ -2047,7 +2060,7 @@ function ProjectWorkspace({
     if (!loaded) return
     const queued = takeQuickAction()
     if (queued && canvasRef.current?.offsetParent !== null) {
-      runQuickActionRef.current(queued)
+      runQuickActionRef.current(queued.action, queued.shell)
     }
   }, [loaded])
 
@@ -2300,18 +2313,92 @@ function ProjectWorkspace({
         setCommandMessage("Available commands")
         return
       } else {
-        const suggestion = suggestCommand(commandName)
-        setShowHelp(!suggestion)
-        setCommandMessage(
-          suggestion
-            ? `Unknown command: ${name} — did you mean "${suggestion}"?`
-            : `Unknown command: ${name}. Try one of these:`,
-        )
+        // Anything that isn't a shortcut is a conversation: the assistant
+        // reads the project and acts on the board.
+        await runWorkspaceAssistant(value)
         return
       }
       setCommand("")
     } catch (error) {
       setCommandMessage(errorMessage(error))
+    }
+  }
+
+  const [workspaceChatId, setWorkspaceChatId] = useState("")
+  const [aiWorking, setAiWorking] = useState(false)
+  const [wsChatOpen, setWsChatOpen] = useState(false)
+  const [wsChatSize, setWsChatSize] = useState<ChatSize>("compact")
+  const [wsChatMessages, setWsChatMessages] = useState<ChatMessage[]>([])
+
+  // Delegated agents report back: every brief ends by leaving a results note
+  // on the board, closing the loop without the user chasing terminals.
+  const taskWithReport = (task: string) =>
+    task
+      ? task +
+        "\n\nWhen you finish, use the seizen_desk_add_note tool to leave a short note on the user's board summarizing what you did and found, in the user's language."
+      : ""
+
+  const workspaceActionChip = (action: core.AssistantAction): string => {
+    const input = (action.input ?? {}) as unknown as Record<string, unknown>
+    if (action.name === "open_terminal") {
+      const shell = input.shell === "codex" ? "codex" : "claude"
+      const task = typeof input.task === "string" ? input.task.split("\n")[0].trim() : ""
+      return task ? `${shell}: ${task.slice(0, 40)}` : `${shell} terminal`
+    }
+    if (action.name === "add_note") return "Note added"
+    if (action.name === "add_todo") return "Checklist added"
+    if (action.name === "open_browser") return "Browser opened"
+    if (action.name === "tidy") return "Board tidied"
+    return action.name
+  }
+
+  const executeWorkspaceAssistantAction = (action: core.AssistantAction) => {
+    // Wails types json.RawMessage as number[], but it marshals as the real JSON object.
+    const input = (action.input ?? {}) as unknown as Record<string, unknown>
+    if (action.name === "open_terminal") {
+      const shell = input.shell === "codex" ? "codex" : "claude"
+      const task = typeof input.task === "string" ? input.task : ""
+      addTerminal(shell, undefined, taskWithReport(task))
+    } else if (action.name === "add_note" && typeof input.text === "string") {
+      addNote(input.text)
+    } else if (action.name === "add_todo" && Array.isArray(input.items)) {
+      addTodo(input.items.filter((item): item is string => typeof item === "string"))
+    } else if (action.name === "open_browser" && typeof input.url === "string") {
+      addBrowser(normalizeBrowserURL(input.url))
+    } else if (action.name === "tidy") {
+      tidyAll()
+    }
+  }
+
+  const runWorkspaceAssistant = async (prompt: string) => {
+    if (aiWorking) return
+    setAiWorking(true)
+    setWsChatOpen(true)
+    setWsChatMessages((messages) => [...messages, { role: "user", content: prompt }])
+    setCommand("")
+    document.documentElement.dataset.aiActive = "on"
+    try {
+      const reply = await AskWorkspaceAssistant(project.id, workspaceChatId, prompt)
+      setWorkspaceChatId(reply.chatId)
+      const chips = (reply.actions ?? []).map(workspaceActionChip)
+      if (reply.text || chips.length > 0) {
+        setWsChatMessages((messages) => [
+          ...messages,
+          { role: "assistant", content: reply.text || "Done.", chips },
+        ])
+      }
+      for (const action of reply.actions ?? []) {
+        executeWorkspaceAssistantAction(action)
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      }
+    } catch (error) {
+      setWsChatMessages((messages) => [
+        ...messages,
+        { role: "assistant", content: errorMessage(error), error: true },
+      ])
+    } finally {
+      delete document.documentElement.dataset.aiActive
+      setAiWorking(false)
     }
   }
 
@@ -3549,10 +3636,38 @@ function ProjectWorkspace({
         aria-label="Workspace command bar"
         onSubmit={runCommand}
         className={cn(
-          "absolute bottom-5 left-1/2 z-40 w-[calc(100%-2rem)] max-w-[33rem] -translate-x-1/2 rounded-[1.4rem] border border-[var(--focus-border)] bg-[var(--surface-container-high)] px-3 py-1 shadow-[0_14px_40px_var(--shadow-elevated)] backdrop-blur-2xl transition-shadow focus-within:shadow-[0_14px_40px_var(--shadow-elevated),0_0_0_3px_var(--focus-ring)]",
+          "absolute bottom-5 left-1/2 z-40 w-[calc(100%-2rem)] -translate-x-1/2 rounded-[1.4rem] border border-[var(--focus-border)] bg-[var(--surface-container-high)] px-3 py-1 shadow-[0_14px_40px_var(--shadow-elevated)] backdrop-blur-2xl transition-[box-shadow,max-width] duration-300 focus-within:shadow-[0_14px_40px_var(--shadow-elevated),0_0_0_3px_var(--focus-ring)]",
+          wsChatOpen && wsChatSize === "large" ? "max-w-[42rem]" : "max-w-[33rem]",
           projectMode !== "workspace" && "invisible pointer-events-none",
         )}
       >
+        {wsChatOpen && (
+          <div
+            className={cn(
+              "chat-morph -mx-3 -mt-1 mb-1 flex flex-col overflow-hidden rounded-t-[1.4rem] border-b border-[var(--outline-variant)] transition-[height] duration-300 ease-[cubic-bezier(.22,1,.36,1)]",
+              wsChatSize === "large" ? "h-[30rem]" : "h-[19rem]",
+            )}
+          >
+            <AssistantChat
+              messages={wsChatMessages}
+              busy={aiWorking}
+              chatId={workspaceChatId}
+              size={wsChatSize}
+              onToggleSize={() =>
+                setWsChatSize((current) => (current === "compact" ? "large" : "compact"))
+              }
+              onLoadChat={(id, messages) => {
+                setWorkspaceChatId(id)
+                setWsChatMessages(messages)
+              }}
+              onNewChat={() => {
+                setWorkspaceChatId("")
+                setWsChatMessages([])
+              }}
+              onClose={() => setWsChatOpen(false)}
+            />
+          </div>
+        )}
         <div className="flex h-9 items-center gap-2 text-[var(--on-surface-variant)]">
           <details
             ref={backgroundDetailsRef}
@@ -4006,7 +4121,7 @@ function WorkspacePanel({
 
 
   const title = node.type === "terminal"
-    ? terminalTitles[node.shell]
+    ? (node.taskHint ?? terminalTitles[node.shell])
     : node.type === "browser"
       ? "Browser"
       : node.type === "player"

@@ -33,6 +33,9 @@ var appMountingMigration string
 //go:embed migrations/006_experiments.sql
 var experimentMigration string
 
+//go:embed migrations/007_assistant_chats.sql
+var assistantChatMigration string
+
 const (
 	projectRootSetting      = "project_root"
 	appearanceModeSetting   = "appearance_mode"
@@ -91,7 +94,7 @@ func (d *Database) Initialize(ctx context.Context) error {
 		err = os.Chmod(path, 0o600)
 	}
 	if err == nil {
-		for _, migration := range []string{projectMigration, appServerMigration, agentBridgeMigration, serverRuntimeMigration} {
+		for _, migration := range []string{projectMigration, appServerMigration, agentBridgeMigration, serverRuntimeMigration, assistantChatMigration} {
 			if _, err = db.ExecContext(ctx, migration); err != nil {
 				break
 			}

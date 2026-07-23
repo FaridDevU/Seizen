@@ -13,6 +13,7 @@ import {
   House,
   LayoutGrid,
   ListChecks,
+  LoaderCircle,
   Mic,
   Plus,
   Search,
@@ -25,12 +26,15 @@ import {
 
 import seizenLogo from "../logo/logo (2).png"
 import {
+  AskAssistant,
   CancelClose,
   ConfirmClose,
   GetAppearance,
+  GetAssistantSettings,
   SetAppearance,
   StartDictation,
 } from "../wailsjs/go/core/App"
+import type { core } from "../wailsjs/go/models"
 import { EventsOn, WindowToggleMaximise } from "../wailsjs/runtime/runtime"
 import { Button } from "@/components/ui/button"
 import {
@@ -40,6 +44,7 @@ import {
   type ThemeAccent,
 } from "@/components/SettingsPanel"
 import { ConfirmHost } from "@/components/ui/confirm"
+import { AssistantChat, type ChatMessage, type ChatSize } from "@/components/AssistantChat"
 import { WindowControls } from "@/components/WindowControls"
 import {
   Command,
@@ -273,8 +278,30 @@ function App() {
     return ["#ff9a62", "#ff4d8d", "#b45cf6"]
   })
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [aiBusy, setAiBusy] = useState(false)
   const [query, setQuery] = useState("")
   const [feedback, setFeedback] = useState<Feedback | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
+  const [chatId, setChatId] = useState("")
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatSize, setChatSize] = useState<ChatSize>("compact")
+  const [assistantReady, setAssistantReady] = useState(true)
+
+  // First-run friendliness: if no provider works yet, the chat shows a setup
+  // card instead of a dry error.
+  useEffect(() => {
+    if (!chatOpen) return
+    void GetAssistantSettings()
+      .then((view) =>
+        setAssistantReady(
+          view.provider === "api"
+            ? view.keys.length > 0
+            : (view.provider === "claude-cli" ? view.claudeCli : view.codexCli)?.note ===
+                "connected",
+        ),
+      )
+      .catch(() => setAssistantReady(true))
+  }, [chatOpen])
   const [gridSignal, setGridSignal] = useState(0)
   const [workspaceTarget, setWorkspaceTarget] = useState<{
     projectId: string
@@ -343,6 +370,15 @@ function App() {
     ) as CSSProperties
     // activeItem refreshes the hour-based pick whenever you navigate.
   }, [glowMode, glowPalette, glowColors, randomGlow, activeItem])
+
+  // Glow colors live on the root so the chat bar AND every button lit up
+  // while the assistant works share the same palette.
+  useEffect(() => {
+    const root = document.documentElement
+    for (const [name, value] of Object.entries(glowStyle)) {
+      root.style.setProperty(name, String(value))
+    }
+  }, [glowStyle])
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark)
@@ -541,14 +577,14 @@ function App() {
 
   // Deterministic quick action: acts on the visible workspace, or opens the
   // most recent space with the action queued. Never a dead end.
-  const runQuickAction = async (action: WorkspaceQuickAction) => {
+  const runQuickAction = async (action: WorkspaceQuickAction, shell?: string) => {
     closePalette()
     setActiveItem("folders")
     // Wait two frames so the library (and its workspace) become visible first.
     await new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve)),
     )
-    if (requestWorkspaceAction(action)) return
+    if (requestWorkspaceAction(action, shell)) return
     let recent = recentProjects[0]
     if (!recent) {
       await loadRecents()
@@ -563,8 +599,93 @@ function App() {
       })
       return
     }
-    queueQuickAction(action)
+    queueQuickAction(action, shell)
     requestOpenProject(recent.id)
+  }
+
+  // Small pill under the assistant's bubble naming each action it took.
+  const assistantActionChip = (action: core.AssistantAction): string => {
+    const input = (action.input ?? {}) as unknown as Record<string, unknown>
+    if (action.name === "open_project") return `Open: ${String(input.name ?? "")}`
+    if (action.name === "open_section") return `Go to ${String(input.section ?? "")}`
+    if (action.name === "add_panel") {
+      const count = Number(input.count) || 1
+      const label =
+        input.panel === "terminal" && typeof input.shell === "string"
+          ? `${input.shell} terminal`
+          : String(input.panel ?? "panel")
+      return count > 1 ? `${label} ×${count}` : label
+    }
+    return action.name
+  }
+
+  const isQuickAction = (value: unknown): value is WorkspaceQuickAction =>
+    value === "note" || value === "todo" || value === "document" ||
+    value === "tidy" || value === "terminal"
+
+  const executeAssistantAction = async (action: core.AssistantAction) => {
+    // Wails types json.RawMessage as number[], but it marshals as the real JSON object.
+    const input = (action.input ?? {}) as unknown as Record<string, unknown>
+    if (action.name === "open_project") {
+      const wanted = String(input.name ?? "").trim().toLowerCase()
+      const projects = (await projectService.list()).filter((p) => !p.archived)
+      const match =
+        projects.find((p) => p.name.toLowerCase() === wanted) ??
+        projects.find((p) => p.name.toLowerCase().includes(wanted))
+      if (!match) throw new Error(`No space named "${String(input.name ?? "")}"`)
+      openProject(match)
+    } else if (action.name === "open_section") {
+      const section = input.section
+      if (section === "home" || section === "folders" || section === "servers" || section === "settings") {
+        await navigateTo(section)
+      }
+    } else if (action.name === "add_panel") {
+      const panel = input.panel === "tidy" ? "tidy" : input.panel
+      if (!isQuickAction(panel)) return
+      const count = Math.min(Math.max(Number(input.count) || 1, 1), 4)
+      const shell = typeof input.shell === "string" ? input.shell : undefined
+      for (let i = 0; i < count; i++) {
+        await runQuickAction(panel, shell)
+        // Let the board settle so each panel lands on a free spot.
+        await new Promise((resolve) => setTimeout(resolve, 450))
+      }
+    }
+  }
+
+  // The chat bar comes alive: the bar morphs into a conversation, the model
+  // plans actions, and the app performs them one by one while every button
+  // glows with the bar's colors. Each chat is its own isolated CLI session,
+  // resumed per turn — nothing keeps running in the background.
+  const runAssistant = async (prompt: string) => {
+    if (aiBusy) return
+    setAiBusy(true)
+    setChatOpen(true)
+    setChatMessages((messages) => [...messages, { role: "user", content: prompt }])
+    setQuery("")
+    document.documentElement.dataset.aiActive = "on"
+    try {
+      const reply = await AskAssistant(chatId, prompt)
+      setChatId(reply.chatId)
+      const chips = (reply.actions ?? []).map(assistantActionChip)
+      if (reply.text || chips.length > 0) {
+        setChatMessages((messages) => [
+          ...messages,
+          { role: "assistant", content: reply.text || "Done.", chips },
+        ])
+      }
+      for (const action of reply.actions ?? []) {
+        await executeAssistantAction(action)
+        await new Promise((resolve) => setTimeout(resolve, 350))
+      }
+    } catch (error) {
+      setChatMessages((messages) => [
+        ...messages,
+        { role: "assistant", content: String(error), error: true },
+      ])
+    } finally {
+      delete document.documentElement.dataset.aiActive
+      setAiBusy(false)
+    }
   }
 
   const renderEntry = (entry: PaletteEntry) => {
@@ -676,12 +797,103 @@ function App() {
           )}
           <div
             ref={paletteRef}
-            style={glowStyle}
             className={cn(
-              "ai-glow pointer-events-auto relative w-full max-w-[28rem] transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)] sm:max-w-[29rem] 2xl:max-w-[32rem]",
-              paletteOpen && query.trim() !== "" && "-translate-y-12 sm:-translate-y-10",
+              "ai-glow pointer-events-auto relative w-full transition-[transform,max-width] duration-300 ease-[cubic-bezier(.22,1,.36,1)]",
+              chatOpen && chatSize === "large"
+                ? "max-w-[40rem] 2xl:max-w-[44rem]"
+                : "max-w-[28rem] sm:max-w-[29rem] 2xl:max-w-[32rem]",
+              !chatOpen && paletteOpen && query.trim() !== "" && "-translate-y-12 sm:-translate-y-10",
             )}
           >
+            {chatOpen ? (
+              <div
+                className={cn(
+                  "chat-morph flex max-h-[calc(100vh-10rem)] flex-col overflow-hidden rounded-[1.4rem] border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_1px_2px_var(--shadow-soft),0_16px_40px_var(--shadow-elevated)] backdrop-blur-xl transition-[height] duration-300 ease-[cubic-bezier(.22,1,.36,1)]",
+                  chatSize === "large" ? "h-[34rem]" : "h-[24rem]",
+                )}
+              >
+                <AssistantChat
+                  messages={chatMessages}
+                  busy={aiBusy}
+                  chatId={chatId}
+                  size={chatSize}
+                  onToggleSize={() =>
+                    setChatSize((current) => (current === "compact" ? "large" : "compact"))
+                  }
+                  setup={
+                    assistantReady
+                      ? null
+                      : {
+                          message:
+                            "The assistant needs a brain first: connect your Claude or ChatGPT subscription, or add an API key.",
+                          onOpenSettings: () => {
+                            setChatOpen(false)
+                            void navigateTo("settings")
+                          },
+                        }
+                  }
+                  onLoadChat={(id, messages) => {
+                    setChatId(id)
+                    setChatMessages(messages)
+                  }}
+                  onNewChat={() => {
+                    setChatId("")
+                    setChatMessages([])
+                  }}
+                  onClose={() => setChatOpen(false)}
+                />
+                <div className="chat-morph-content flex h-[3.4rem] shrink-0 items-center gap-3 border-t border-[var(--outline-variant)] px-4">
+                  {aiBusy ? (
+                    <LoaderCircle
+                      aria-hidden="true"
+                      className="size-[1.2rem] shrink-0 animate-spin text-[var(--primary)]"
+                      strokeWidth={2.2}
+                    />
+                  ) : (
+                    <Plus
+                      aria-hidden="true"
+                      className="size-[1.2rem] shrink-0 text-[var(--primary)]"
+                      strokeWidth={2.2}
+                    />
+                  )}
+                  <input
+                    type="text"
+                    aria-label="Message the assistant"
+                    autoComplete="off"
+                    autoFocus
+                    placeholder="Message the assistant..."
+                    className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--on-surface-variant)]"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && query.trim() && !aiBusy) {
+                        event.preventDefault()
+                        void runAssistant(query.trim())
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault()
+                        setChatOpen(false)
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--state-layer)] hover:text-[var(--primary)]"
+                    aria-label="Dictate with your voice"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() =>
+                      void StartDictation().catch(() =>
+                        setFeedback({ message: "Dictation unavailable", tone: "error" }),
+                      )
+                    }
+                  >
+                    <Mic className="size-[1.15rem]" strokeWidth={2.1} />
+                  </Button>
+                </div>
+              </div>
+            ) : (
             <Command
               loop
               label="Seizen commands"
@@ -700,11 +912,19 @@ function App() {
                     "border-[var(--focus-border)] shadow-[0_1px_2px_var(--shadow-soft),0_10px_28px_var(--shadow-elevated),0_0_0_3px_var(--focus-ring)]",
                 )}
               >
-                <Plus
-                  aria-hidden="true"
-                  className="size-[1.35rem] shrink-0 text-[var(--primary)]"
-                  strokeWidth={2.2}
-                />
+                {aiBusy ? (
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="size-[1.35rem] shrink-0 animate-spin text-[var(--primary)]"
+                    strokeWidth={2.2}
+                  />
+                ) : (
+                  <Plus
+                    aria-hidden="true"
+                    className="size-[1.35rem] shrink-0 text-[var(--primary)]"
+                    strokeWidth={2.2}
+                  />
+                )}
 
                 {paletteOpen ? (
                   <CommandInput
@@ -726,6 +946,13 @@ function App() {
                     className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--on-surface-variant)]"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && query.trim()) {
+                        event.preventDefault()
+                        void runAssistant(query.trim())
+                      }
+                    }}
+                    disabled={aiBusy}
                   />
                 )}
 
@@ -857,6 +1084,7 @@ function App() {
                 </div>
               )}
             </Command>
+            )}
           </div>
           </section>
         )}

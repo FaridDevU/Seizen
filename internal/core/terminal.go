@@ -53,6 +53,9 @@ type agentTerminalBridgeConfig struct {
 	Environment      string
 	Unrestricted     bool
 	SharedExtensions bool
+	// Task is an initial prompt the agent starts working on immediately
+	// (passed as the CLI's positional prompt argument).
+	Task string
 }
 
 type terminalBackend interface {
@@ -141,7 +144,7 @@ func (a *App) StartProjectTerminalInFolder(projectID, experimentID, shell, subfo
 
 func (a *App) startProjectTerminal(projectID, experimentID, requestedPath, shell, subfolder string) (string, error) {
 	if shell == "codex" || shell == "claude" || shell == "opencode" {
-		return a.startProjectAgentTerminal(projectID, experimentID, requestedPath, shell, "")
+		return a.startProjectAgentTerminal(projectID, experimentID, requestedPath, shell, "", "")
 	}
 	if err := validateTerminalShell(shell); err != nil {
 		return "", err
@@ -220,14 +223,21 @@ func (a *App) StopProjectTerminal(sessionID string) error {
 // StartProjectAgentTerminal starts a managed Claude Code or Codex terminal with
 // a temporary MCP credential scoped to this project and selected App.
 func (a *App) StartProjectAgentTerminal(projectID, path, shell, appID string) (string, error) {
-	return a.startProjectAgentTerminal(projectID, "", path, shell, appID)
+	return a.startProjectAgentTerminal(projectID, "", path, shell, appID, "")
 }
 
 func (a *App) StartProjectAgentTerminalContext(projectID, experimentID, shell, appID string) (string, error) {
-	return a.startProjectAgentTerminal(projectID, experimentID, "", shell, appID)
+	return a.startProjectAgentTerminal(projectID, experimentID, "", shell, appID, "")
 }
 
-func (a *App) startProjectAgentTerminal(projectID, experimentID, requestedPath, shell, appID string) (string, error) {
+// StartProjectAgentTerminalTask opens an agent terminal that immediately starts
+// working on the given task (the workspace assistant uses this to fan work out
+// across independent terminals).
+func (a *App) StartProjectAgentTerminalTask(projectID, experimentID, shell, appID, task string) (string, error) {
+	return a.startProjectAgentTerminal(projectID, experimentID, "", shell, appID, strings.TrimSpace(task))
+}
+
+func (a *App) startProjectAgentTerminal(projectID, experimentID, requestedPath, shell, appID, task string) (string, error) {
 	if shell != "codex" && shell != "claude" && shell != "opencode" {
 		return "", errors.New("the agent bridge only supports codex, claude, or opencode")
 	}
@@ -295,7 +305,7 @@ func (a *App) startProjectAgentTerminal(projectID, experimentID, requestedPath, 
 	}
 	command, err := projectAgentTerminalCommand(shell, folder, agentTerminalBridgeConfig{
 		URL: bridgeURL, Token: token, ProjectID: projectID, Environment: environment,
-		Unrestricted: unrestricted, SharedExtensions: settings.SharedExtensions,
+		Unrestricted: unrestricted, SharedExtensions: settings.SharedExtensions, Task: task,
 	})
 	if err == nil {
 		err = a.projectTerminalManager().startScopedExperimentProfile(sessionID, projectID, experimentID, "", currentProjectSpaceID, shell, shell, command)

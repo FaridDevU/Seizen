@@ -5,15 +5,21 @@
 
 export type WorkspaceQuickAction = "note" | "todo" | "document" | "tidy" | "terminal"
 
+export type QueuedQuickAction = { action: WorkspaceQuickAction; shell?: string }
+
 export const workspaceActionEvent = "seizen:workspace-action"
 export const openProjectEvent = "seizen:open-project"
 
-let pendingQuickAction: WorkspaceQuickAction | null = null
+let pendingQuickAction: QueuedQuickAction | null = null
 
-export function requestWorkspaceAction(action: WorkspaceQuickAction): boolean {
+export function requestWorkspaceAction(
+  action: WorkspaceQuickAction,
+  shell?: string,
+): boolean {
   let claimed = false
   const detail = {
     action,
+    shell,
     claim: () => {
       claimed = true
     },
@@ -22,14 +28,14 @@ export function requestWorkspaceAction(action: WorkspaceQuickAction): boolean {
   return claimed
 }
 
-export function queueQuickAction(action: WorkspaceQuickAction) {
-  pendingQuickAction = action
+export function queueQuickAction(action: WorkspaceQuickAction, shell?: string) {
+  pendingQuickAction = { action, shell }
 }
 
-export function takeQuickAction(): WorkspaceQuickAction | null {
-  const action = pendingQuickAction
+export function takeQuickAction(): QueuedQuickAction | null {
+  const queued = pendingQuickAction
   pendingQuickAction = null
-  return action
+  return queued
 }
 
 export function requestOpenProject(projectId: string) {
@@ -40,6 +46,7 @@ export function requestOpenProject(projectId: string) {
 
 export function isWorkspaceActionDetail(value: unknown): value is {
   action: WorkspaceQuickAction
+  shell?: string
   claim: () => void
 } {
   if (typeof value !== "object" || value === null) return false
