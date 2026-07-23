@@ -10,7 +10,7 @@ export function ArchiveExperiment(arg1:string,arg2:boolean):Promise<core.Experim
 
 export function AskAssistant(arg1:string,arg2:string):Promise<core.AssistantChatReply>;
 
-export function AskWorkspaceAssistant(arg1:string,arg2:string,arg3:string):Promise<core.AssistantChatReply>;
+export function AskWorkspaceAssistant(arg1:string,arg2:string,arg3:string,arg4:string):Promise<core.AssistantChatReply>;
 
 export function AttachRunningApp(arg1:core.AttachRunningAppInput):Promise<core.AppRuntimeStatus>;
 

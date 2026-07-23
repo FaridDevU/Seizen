@@ -18,8 +18,8 @@ export function AskAssistant(arg1, arg2) {
   return window['go']['core']['App']['AskAssistant'](arg1, arg2);
 }
 
-export function AskWorkspaceAssistant(arg1, arg2, arg3) {
-  return window['go']['core']['App']['AskWorkspaceAssistant'](arg1, arg2, arg3);
+export function AskWorkspaceAssistant(arg1, arg2, arg3, arg4) {
+  return window['go']['core']['App']['AskWorkspaceAssistant'](arg1, arg2, arg3, arg4);
 }
 
 export function AttachRunningApp(arg1) {
