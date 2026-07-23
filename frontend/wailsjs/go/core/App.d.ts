@@ -98,6 +98,8 @@ export function ExportServerReproducibleConfig(arg1:string,arg2:Array<string>,ar
 
 export function FocusApp(arg1:string):Promise<void>;
 
+export function FocusNativeEditor(arg1:string):Promise<void>;
+
 export function GetAgentResourceSettings():Promise<core.AgentResourceSettings>;
 
 export function GetAppConsoleErrors(arg1:string):Promise<core.BrowserAutomationResult>;
@@ -189,8 +191,6 @@ export function ListServerServices(arg1:string,arg2:string):Promise<Array<core.S
 export function ListServers(arg1:string):Promise<Array<core.Server>>;
 
 export function ListServersContext(arg1:string,arg2:string):Promise<Array<core.Server>>;
-
-export function MoveNativeEditor(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number):Promise<void>;
 
 export function OpenProject(arg1:string):Promise<void>;
 

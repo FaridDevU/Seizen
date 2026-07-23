@@ -31,6 +31,7 @@ import {
   Minimize2,
   Music2,
   Palette,
+  PanelsTopLeft,
   Pause,
   Pencil,
   Play,
@@ -56,7 +57,7 @@ import {
   GetSpotifyPlaybackSince,
   GetEditorIntegrations,
   GetSpotifyPlayback,
-  MoveNativeEditor,
+  FocusNativeEditor,
   StartNativeEditor,
   StopProjectEditor,
 } from "../../../wailsjs/go/core/App"
@@ -2190,7 +2191,10 @@ function ProjectWorkspace({
     ensureNodeCapacity()
     clearGeometryHistory()
     const id = workspaceID(`editor-${editor.id}`)
-    const size = { width: 860, height: 560 }
+    // Detached native editors get a small controller card, not a viewport.
+    const size = editor.embedded
+      ? { width: 860, height: 560 }
+      : { width: 380, height: 230 }
     const node: EditorNode = {
       id,
       type: "editor",
@@ -4748,7 +4752,12 @@ function EditorPanel({
     )
   }
   if (node.status === "running" && node.native && node.sessionId) {
-    return <NativeEditorViewport sessionId={node.sessionId} />
+    return (
+      <NativeEditorCard
+        name={editorTitles[node.editorId] ?? node.editorId}
+        sessionId={node.sessionId}
+      />
+    )
   }
   if (node.status === "error" || !node.url) {
     return (
@@ -4786,34 +4795,30 @@ function EditorPanel({
   )
 }
 
-// The editor's Win32 window is embedded in Seizen's window; this
-// placeholder reports its rect in physical pixels every frame it changes
-// (zoom, pan, drag) so the backend keeps it pinned to the node.
-function NativeEditorViewport({ sessionId }: { sessionId: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    let frame = 0
-    let last = ""
-    const tick = () => {
-      frame = window.requestAnimationFrame(tick)
-      const rect = ref.current?.getBoundingClientRect()
-      if (!rect) return
-      const scale = window.devicePixelRatio || 1
-      const x = Math.round(rect.left * scale)
-      const y = Math.round(rect.top * scale)
-      const width = Math.max(0, Math.round(rect.width * scale))
-      const height = Math.max(0, Math.round(rect.height * scale))
-      const key = `${x}:${y}:${width}:${height}`
-      if (key === last) return
-      last = key
-      void MoveNativeEditor(sessionId, x, y, width, height).catch(
-        () => undefined,
-      )
-    }
-    frame = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(frame)
-  }, [sessionId])
-  return <div ref={ref} className="size-full bg-[#181818]" />
+// A native editor (Zed, Cursor...) runs as its own OS window — embedding it
+// as a child breaks fullscreen and minimize, so the node is a small
+// controller card instead.
+function NativeEditorCard({ name, sessionId }: { name: string; sessionId: string }) {
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-3 bg-[var(--surface)] p-4 text-center">
+      <span className="flex size-10 items-center justify-center rounded-2xl bg-[var(--primary-container)] text-[var(--on-primary-container)]">
+        <PanelsTopLeft className="size-[1.15rem]" strokeWidth={1.7} />
+      </span>
+      <div>
+        <div className="text-sm font-medium text-[var(--on-surface)]">{name}</div>
+        <p className="mt-0.5 text-xs text-[var(--on-surface-variant)]">
+          Open in its own window over this project
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => void FocusNativeEditor(sessionId).catch(() => undefined)}
+        className="flex h-8 items-center gap-1.5 rounded-full bg-[var(--primary)] px-4 text-xs font-semibold text-[var(--primary-foreground)] outline-none transition-[opacity,transform] hover:opacity-90 focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-[0.97]"
+      >
+        Bring to front
+      </button>
+    </div>
+  )
 }
 
 function isTerminalOutput(

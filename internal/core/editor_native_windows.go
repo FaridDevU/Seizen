@@ -5,7 +5,6 @@ package core
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,9 +16,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Native editors (Zed, Cursor, Antigravity): they have no web UI, so they are
-// embedded by re-parenting their Win32 window inside Seizen's window and
-// following the workspace node's rect via MoveNativeEditor.
+// Native editors (Zed, Cursor, Antigravity): they have no web UI. They used to
+// be embedded by re-parenting their Win32 window into Seizen's, but GPU
+// editors like Zed break as WS_CHILD (fullscreen crashes, no minimize). Now
+// they stay DETACHED — a normal top-level window the OS manages — and Seizen
+// only tracks the window for lifecycle and focus; the workspace shows a small
+// controller card instead of a fake viewport.
 
 const (
 	nativeEditorSessionPrefix = "native-"
@@ -29,33 +31,15 @@ const (
 )
 
 const (
-	wmClose = 0x0010
-	// GWL_STYLE is -16; as a uintptr the 32-bit two's complement is passed
-	// (the API reads the index as a 32-bit int).
-	gwlStyle       = uintptr(0xFFFFFFF0)
-	wsChild        = 0x40000000
-	wsPopup        = 0x80000000
-	wsCaption      = 0x00C00000
-	wsThickFrame   = 0x00040000
-	wsSysMenu      = 0x00080000
-	wsMinimizeBox  = 0x00020000
-	wsMaximizeBox  = 0x00010000
-	swpNoZOrder    = 0x0004
-	swpNoActivate  = 0x0010
-	swpFrameChange = 0x0020
-	swpShowWindow  = 0x0040
+	wmClose   = 0x0010
+	swRestore = 9
 )
 
 var (
-	procSetParent           = user32Window.NewProc("SetParent")
-	procMoveWindow          = user32Window.NewProc("MoveWindow")
 	procIsWindow            = user32Window.NewProc("IsWindow")
 	procPostMessage         = user32Window.NewProc("PostMessageW")
-	procGetWindowLongPtr    = user32Window.NewProc("GetWindowLongPtrW")
-	procSetWindowLongPtr    = user32Window.NewProc("SetWindowLongPtrW")
-	procSetWindowPos        = user32Window.NewProc("SetWindowPos")
-	procGetWindowRect       = user32Window.NewProc("GetWindowRect")
-	procMapWindowPoints     = user32Window.NewProc("MapWindowPoints")
+	procShowWindow          = user32Window.NewProc("ShowWindow")
+	procSetForegroundWindow = user32Window.NewProc("SetForegroundWindow")
 	procGetWindowTextLength = user32Window.NewProc("GetWindowTextLengthW")
 	procQueryFullImageName  = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
 )
@@ -67,14 +51,10 @@ type nativeEditorManager struct {
 }
 
 type nativeEditorSession struct {
-	id        string
-	window    uintptr
-	parent    uintptr
-	prevStyle uintptr
+	id     string
+	window uintptr
 	// guarded by manager.mu
-	stopped    bool
-	hasRect    bool
-	x, y, w, h int
+	stopped bool
 }
 
 func (a *App) nativeEditorSessionManager() *nativeEditorManager {
@@ -96,9 +76,9 @@ func (a *App) currentNativeEditorManager() *nativeEditorManager {
 	return manager
 }
 
-// StartNativeEditor opens the project in a native editor and re-parents its
-// window inside Seizen's window. Returns a session without a URL; the
-// frontend positions the window with MoveNativeEditor.
+// StartNativeEditor opens the project in a native editor as a normal detached
+// OS window and tracks it. Returns a session without a URL; the workspace
+// shows a controller card for it.
 func (a *App) StartNativeEditor(projectPath, id string) (EditorSession, error) {
 	definition, err := a.requireExternalEditor(id)
 	if err != nil {
@@ -112,12 +92,7 @@ func (a *App) StartNativeEditor(projectPath, id string) (EditorSession, error) {
 	if err != nil {
 		return EditorSession{}, err
 	}
-	parent, err := seizenMainWindow()
-	if err != nil {
-		return EditorSession{}, err
-	}
 	exe := strings.ToLower(definition.Name + ".exe")
-	killOrphanEditorProcesses(exe)
 	before := visibleWindowsForExe(exe)
 
 	command := exec.Command(executable, folder)
@@ -132,14 +107,13 @@ func (a *App) StartNativeEditor(projectPath, id string) (EditorSession, error) {
 
 	window := waitForNewEditorWindow(exe, before)
 	if window == 0 {
-		return EditorSession{}, fmt.Errorf("%s started but its window did not appear; close it from the taskbar and retry", definition.Name)
+		return EditorSession{}, fmt.Errorf("%s started but its window did not appear; check the taskbar and retry", definition.Name)
 	}
 	sessionID := nativeEditorSessionPrefix + definition.ID
 	if uuid, uuidErr := newUUID(); uuidErr == nil {
 		sessionID = nativeEditorSessionPrefix + uuid
 	}
-	session := &nativeEditorSession{id: sessionID, window: window, parent: parent}
-	session.prevStyle = embedNativeEditorWindow(window, parent)
+	session := &nativeEditorSession{id: sessionID, window: window}
 
 	manager := a.nativeEditorSessionManager()
 	manager.mu.Lock()
@@ -149,49 +123,45 @@ func (a *App) StartNativeEditor(projectPath, id string) (EditorSession, error) {
 	return EditorSession{SessionID: sessionID, URL: ""}, nil
 }
 
-// MoveNativeEditor places the embedded window over the workspace node's
-// rect. Coordinates in physical pixels relative to the client area.
-func (a *App) MoveNativeEditor(sessionID string, x, y, width, height int) error {
-	manager := a.currentNativeEditorManager()
-	if manager == nil {
-		return errors.New("the editor session was not found")
+// FocusNativeEditor brings the detached editor window to the front,
+// restoring it if it was minimized.
+func (a *App) FocusNativeEditor(sessionID string) error {
+	session, err := a.nativeEditorSessionByID(sessionID)
+	if err != nil {
+		return err
 	}
-	if width < 0 {
-		width = 0
-	}
-	if height < 0 {
-		height = 0
-	}
-	manager.mu.Lock()
-	session := manager.sessions[sessionID]
-	if session != nil {
-		session.x, session.y, session.w, session.h = x, y, width, height
-		session.hasRect = true
-	}
-	manager.mu.Unlock()
-	if session == nil {
-		return errors.New("the editor session was not found")
-	}
-	_, _, _ = procMoveWindow.Call(session.window, uintptr(x), uintptr(y), uintptr(width), uintptr(height), 1)
+	_, _, _ = procShowWindow.Call(session.window, swRestore)
+	_, _, _ = procSetForegroundWindow.Call(session.window)
 	return nil
 }
 
 func (a *App) stopNativeEditor(sessionID string) error {
+	session, err := a.nativeEditorSessionByID(sessionID)
+	if err != nil {
+		return err
+	}
+	manager := a.currentNativeEditorManager()
+	manager.mu.Lock()
+	session.stopped = true
+	manager.mu.Unlock()
+	// A polite close: if the editor shows a "save changes" prompt, the window
+	// stays visible and usable instead of losing data.
+	_, _, _ = procPostMessage.Call(session.window, wmClose, 0, 0)
+	return nil
+}
+
+func (a *App) nativeEditorSessionByID(sessionID string) (*nativeEditorSession, error) {
 	manager := a.currentNativeEditorManager()
 	if manager == nil {
-		return errors.New("the editor session was not found")
+		return nil, errors.New("the editor session was not found")
 	}
 	manager.mu.Lock()
 	session := manager.sessions[sessionID]
-	if session != nil {
-		session.stopped = true
-	}
 	manager.mu.Unlock()
 	if session == nil {
-		return errors.New("the editor session was not found")
+		return nil, errors.New("the editor session was not found")
 	}
-	releaseNativeEditorWindow(session)
-	return nil
+	return session, nil
 }
 
 func (manager *nativeEditorManager) watch(session *nativeEditorSession) {
@@ -199,13 +169,6 @@ func (manager *nativeEditorManager) watch(session *nativeEditorSession) {
 	defer ticker.Stop()
 	for range ticker.C {
 		if alive, _, _ := procIsWindow.Call(session.window); alive != 0 {
-			manager.mu.Lock()
-			x, y, w, h := session.x, session.y, session.w, session.h
-			pin := session.hasRect && !session.stopped
-			manager.mu.Unlock()
-			if pin {
-				keepNativeEditorPinned(session, x, y, w, h)
-			}
 			continue
 		}
 		manager.mu.Lock()
@@ -222,61 +185,14 @@ func (manager *nativeEditorManager) watch(session *nativeEditorSession) {
 	}
 }
 
+// close marks every session stopped; detached editor windows belong to the
+// user and stay open when Seizen exits.
 func (manager *nativeEditorManager) close() {
 	manager.mu.Lock()
-	remaining := make([]*nativeEditorSession, 0, len(manager.sessions))
 	for _, session := range manager.sessions {
 		session.stopped = true
-		remaining = append(remaining, session)
 	}
 	manager.mu.Unlock()
-	for _, session := range remaining {
-		releaseNativeEditorWindow(session)
-	}
-}
-
-// embedNativeEditorWindow turns the window into a child of Seizen. Returns
-// the original style to restore it when releasing it.
-func embedNativeEditorWindow(window, parent uintptr) uintptr {
-	prevStyle, _, _ := procGetWindowLongPtr.Call(window, uintptr(gwlStyle))
-	style := (uint32(prevStyle) &^ uint32(wsPopup|wsCaption|wsThickFrame|wsSysMenu|wsMinimizeBox|wsMaximizeBox)) | wsChild
-	_, _, _ = procSetWindowLongPtr.Call(window, uintptr(gwlStyle), uintptr(style))
-	_, _, _ = procSetParent.Call(window, parent)
-	// Zero size until the frontend sends the node's first rect.
-	_, _, _ = procSetWindowPos.Call(window, 0, 0, 0, 0, 0, swpNoZOrder|swpNoActivate|swpFrameChange)
-	return prevStyle
-}
-
-// keepNativeEditorPinned returns the window to the node's rect if it moved:
-// editors with their own title bar (Zed, Cursor) start a system move-loop
-// when dragged, which moves the child window inside Seizen. If the editor
-// restored its top-level style, it embeds it again.
-func keepNativeEditorPinned(session *nativeEditorSession, x, y, width, height int) {
-	if style, _, _ := procGetWindowLongPtr.Call(session.window, uintptr(gwlStyle)); style&wsChild == 0 {
-		embedNativeEditorWindow(session.window, session.parent)
-	}
-	var rect windows.Rect
-	if ok, _, _ := procGetWindowRect.Call(session.window, uintptr(unsafe.Pointer(&rect))); ok == 0 {
-		return
-	}
-	_, _, _ = procMapWindowPoints.Call(0, session.parent, uintptr(unsafe.Pointer(&rect)), 2)
-	if int(rect.Left) == x && int(rect.Top) == y && int(rect.Right-rect.Left) == width && int(rect.Bottom-rect.Top) == height {
-		return
-	}
-	_, _, _ = procMoveWindow.Call(session.window, uintptr(x), uintptr(y), uintptr(width), uintptr(height), 1)
-}
-
-// releaseNativeEditorWindow returns the window to the desktop with its
-// original style and asks it to close; if the editor shows a "save changes"
-// prompt, the window stays visible and usable instead of losing data.
-func releaseNativeEditorWindow(session *nativeEditorSession) {
-	if alive, _, _ := procIsWindow.Call(session.window); alive == 0 {
-		return
-	}
-	_, _, _ = procSetWindowLongPtr.Call(session.window, uintptr(gwlStyle), session.prevStyle)
-	_, _, _ = procSetParent.Call(session.window, 0)
-	_, _, _ = procSetWindowPos.Call(session.window, 0, 120, 120, 1100, 720, swpNoZOrder|swpFrameChange|swpShowWindow)
-	_, _, _ = procPostMessage.Call(session.window, wmClose, 0, 0)
 }
 
 func waitForNewEditorWindow(exe string, before map[uintptr]bool) uintptr {
@@ -290,17 +206,6 @@ func waitForNewEditorWindow(exe string, before map[uintptr]bool) uintptr {
 		time.Sleep(nativeEditorPollEvery)
 	}
 	return 0
-}
-
-func seizenMainWindow() (uintptr, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return 0, err
-	}
-	for window := range visibleWindowsForExe(strings.ToLower(filepath.Base(self))) {
-		return window, nil
-	}
-	return 0, errors.New("Seizen's main window was not found")
 }
 
 // visibleWindowsForExe enumerates visible top-level windows with a title
@@ -347,49 +252,6 @@ func enumVisibleWindowsForExe(exe string) (map[uintptr]bool, map[uint32]bool) {
 	windowEnum.pids = make(map[uint32]bool)
 	_, _, _ = enumWindows.Call(windowEnum.callback, 0)
 	return windowEnum.found, windowEnum.pids
-}
-
-// killOrphanEditorProcesses terminates editor processes without any visible
-// window. They become orphaned when Seizen dies without releasing the
-// embedded window (the child window dies with the parent); since these
-// editors are single-instance, the orphan hogs subsequent opens and no new
-// window ever appears.
-func killOrphanEditorProcesses(exe string) {
-	_, windowed := enumVisibleWindowsForExe(exe)
-	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return
-	}
-	defer func() { _ = windows.CloseHandle(snapshot) }()
-	var entry windows.ProcessEntry32
-	entry.Size = uint32(unsafe.Sizeof(entry))
-	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
-		if strings.ToLower(windows.UTF16ToString(entry.ExeFile[:])) != exe || windowed[entry.ProcessID] {
-			continue
-		}
-		killIfNotStarting(entry.ProcessID)
-	}
-}
-
-// killIfNotStarting terminates the process unless it has been alive for less
-// than 10s (a legitimately just-launched editor doesn't have a window yet).
-func killIfNotStarting(pid uint32) {
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_TERMINATE|windows.SYNCHRONIZE, false, pid)
-	if err != nil {
-		return
-	}
-	defer func() { _ = windows.CloseHandle(handle) }()
-	var creation, exit, kernel, user windows.Filetime
-	if windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user) != nil {
-		return
-	}
-	if time.Since(time.Unix(0, creation.Nanoseconds())) < 10*time.Second {
-		return
-	}
-	if windows.TerminateProcess(handle, 1) == nil {
-		// Waits for it to release the single-instance lock before relaunching.
-		_, _ = windows.WaitForSingleObject(handle, 3000)
-	}
 }
 
 func processExeBase(pid uint32) string {

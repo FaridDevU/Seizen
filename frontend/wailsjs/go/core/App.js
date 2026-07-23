@@ -194,6 +194,10 @@ export function FocusApp(arg1) {
   return window['go']['core']['App']['FocusApp'](arg1);
 }
 
+export function FocusNativeEditor(arg1) {
+  return window['go']['core']['App']['FocusNativeEditor'](arg1);
+}
+
 export function GetAgentResourceSettings() {
   return window['go']['core']['App']['GetAgentResourceSettings']();
 }
@@ -376,10 +380,6 @@ export function ListServers(arg1) {
 
 export function ListServersContext(arg1, arg2) {
   return window['go']['core']['App']['ListServersContext'](arg1, arg2);
-}
-
-export function MoveNativeEditor(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['core']['App']['MoveNativeEditor'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function OpenProject(arg1) {

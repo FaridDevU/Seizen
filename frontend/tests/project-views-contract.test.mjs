@@ -136,7 +136,11 @@ test("Code editors opens VS Code and Tools keeps the Browser", async () => {
   assert.match(workspace, /sandbox="[^"]*allow-scripts[^"]*"/)
   assert.match(workspace, /referrerPolicy="no-referrer"/)
   assert.match(workspace, /StartNativeEditor\(project\.path, editorId\)/)
-  assert.match(workspace, /MoveNativeEditor\(sessionId, x, y, width, height\)/)
+  // Native editors are detached OS windows with a controller card, never a
+  // re-parented fake viewport (that broke Zed's fullscreen and minimize).
+  assert.match(workspace, /FocusNativeEditor\(sessionId\)/)
+  assert.match(workspace, /NativeEditorCard/)
+  assert.doesNotMatch(workspace, /MoveNativeEditor/)
   assert.match(workspace, /disabled=\{!usable\}/)
   assert.match(workspace, /is not installed on this computer/)
   assert.match(workspace, /label="Code editors"[\s\S]*editorIntegrations[\s\S]*label="Tools"[\s\S]*Browser/)

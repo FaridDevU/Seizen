@@ -732,10 +732,11 @@ input[type="number"]::-webkit-inner-spin-button {
   50% { opacity: 1; transform: translateY(-0.14rem); }
 }
 
-/* Apple-Intelligence-style edge light: two layers like Siri's screen glow —
-   a crisp thin stroke plus a soft wide bloom of the same gradient, spinning
-   at different speeds in opposite directions so the colors interfere
-   organically instead of looping like a loading spinner. */
+/* Apple-Intelligence-style edge light, built like Siri's iOS 18 glow: large
+   soft color fields that DRIFT along the screen edges (no spinning ring), a
+   faint crisp line for definition, everything masked to a feathered frame.
+   The blobs are radial gradients whose background-position slides — that is
+   what makes it feel like living light instead of a loading spinner. */
 html[data-ai-active="on"] body::before,
 html[data-ai-active="on"] body::after {
   content: "";
@@ -745,39 +746,97 @@ html[data-ai-active="on"] body::after {
   pointer-events: none;
   /* Matches the Windows 11 window corner radius so nothing looks clipped. */
   border-radius: 8px;
-  background: conic-gradient(
-    from var(--ai-angle),
-    var(--ai-c1),
-    color-mix(in oklab, var(--ai-c2) 78%, transparent),
-    var(--ai-c3),
-    color-mix(in oklab, var(--ai-c4) 82%, transparent),
-    var(--ai-c5),
-    color-mix(in oklab, var(--ai-c1) 70%, transparent),
-    var(--ai-c2),
-    var(--ai-c1)
-  );
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
   mask-composite: exclude;
+  background-repeat: no-repeat;
 }
-/* Crisp definition stroke, gently smoothed. */
+/* Faint crisp definition line hugging the edge. */
 html[data-ai-active="on"] body::before {
-  padding: 2px;
-  filter: blur(2px) saturate(1.6) brightness(1.1);
+  padding: 1.5px;
+  background-image: linear-gradient(
+    115deg,
+    var(--ai-c1),
+    var(--ai-c2),
+    var(--ai-c3),
+    var(--ai-c4),
+    var(--ai-c5)
+  );
+  background-size: 300% 300%;
+  filter: blur(1px) saturate(1.5);
+  opacity: 0.85;
   animation:
-    ai-spin 9s linear infinite,
-    ai-edge-in 0.5s ease-out backwards;
+    ai-edge-sheen 7s ease-in-out infinite alternate,
+    ai-edge-in 0.6s ease-out backwards;
 }
-/* Wide inward bloom, counter-rotating and breathing softly. */
+/* The bloom: five big soft blobs drifting around the frame. */
 html[data-ai-active="on"] body::after {
-  padding: 14px;
-  filter: blur(28px) saturate(1.35);
+  padding: 16px;
+  background-image:
+    radial-gradient(closest-side, var(--ai-c1), transparent),
+    radial-gradient(closest-side, var(--ai-c2), transparent),
+    radial-gradient(closest-side, var(--ai-c3), transparent),
+    radial-gradient(closest-side, var(--ai-c4), transparent),
+    radial-gradient(closest-side, var(--ai-c5), transparent);
+  background-size:
+    55vw 30vh,
+    45vw 34vh,
+    50vw 30vh,
+    42vw 38vh,
+    48vw 32vh;
+  filter: blur(30px) saturate(1.45);
   animation:
-    ai-spin 14s linear infinite reverse,
-    ai-edge-breathe 3.8s ease-in-out infinite,
-    ai-edge-in 0.7s ease-out backwards;
+    ai-edge-drift 16s ease-in-out infinite,
+    ai-edge-breathe 4.2s ease-in-out infinite,
+    ai-edge-in 0.8s ease-out backwards;
+}
+/* Each blob wanders to a different edge over the cycle, so colors blend and
+   part organically at the corners. Positions may sit far outside the frame;
+   the mask keeps only the edge sliver visible. */
+@keyframes ai-edge-drift {
+  0%,
+  100% {
+    background-position:
+      -15vw -12vh,
+      55vw -14vh,
+      104vw 20vh,
+      45vw 100vh,
+      -18vw 55vh;
+  }
+  25% {
+    background-position:
+      35vw -14vh,
+      104vw 10vh,
+      70vw 102vh,
+      -16vw 75vh,
+      -14vw -10vh;
+  }
+  50% {
+    background-position:
+      102vw -10vh,
+      75vw 100vh,
+      5vw 102vh,
+      -16vw 15vh,
+      40vw -14vh;
+  }
+  75% {
+    background-position:
+      95vw 60vh,
+      20vw 102vh,
+      -18vw 40vh,
+      25vw -14vh,
+      102vw 5vh;
+  }
+}
+@keyframes ai-edge-sheen {
+  from {
+    background-position: 0% 0%;
+  }
+  to {
+    background-position: 100% 100%;
+  }
 }
 @keyframes ai-edge-in {
   from {
@@ -787,9 +846,9 @@ html[data-ai-active="on"] body::after {
 @keyframes ai-edge-breathe {
   0%,
   100% {
-    opacity: 0.6;
+    opacity: 0.65;
   }
   50% {
-    opacity: 0.95;
+    opacity: 1;
   }
 }
