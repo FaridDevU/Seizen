@@ -294,6 +294,11 @@ func (a *App) SetAppearance(mode, accent string) (Appearance, error) {
 	return a.database.SetAppearance(a.context(), mode, accent)
 }
 
+// StartDictation opens the OS dictation overlay for the focused input.
+func (a *App) StartDictation() error {
+	return startDictation()
+}
+
 // ChooseDirectory opens the native Wails directory picker. An empty string means cancel.
 func (a *App) ChooseDirectory(title string) (string, error) {
 	if title == "" {

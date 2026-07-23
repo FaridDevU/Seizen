@@ -5,12 +5,14 @@ import test from "node:test"
 const source = (name) => readFile(new URL(`../src/${name}`, import.meta.url), "utf8")
 
 test("Resources configures editors and distinguishes integration from install", async () => {
-  const [app, resources] = await Promise.all([
-    source("App.tsx"),
+  const [settings, resources] = await Promise.all([
+    source("components/SettingsPanel.tsx"),
     source("components/ResourcesPanel.tsx"),
   ])
 
-  assert.match(app, /activeItem === "resources" && <ResourcesPanel/)
+  // Resources lives inside the Settings modal, not the sidebar nav.
+  assert.match(settings, /section === "resources" && \(/)
+  assert.match(settings, /<ResourcesPanel \/>/)
   for (const editor of ["vscode", "cursor", "antigravity", "zed"]) {
     assert.match(resources, new RegExp(editor))
   }

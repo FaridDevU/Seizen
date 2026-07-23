@@ -254,6 +254,8 @@ export function StartApp(arg1:string):Promise<core.ProjectApp>;
 
 export function StartAppContext(arg1:string,arg2:string):Promise<core.ProjectApp>;
 
+export function StartDictation():Promise<void>;
+
 export function StartMockServer(arg1:string):Promise<core.Server>;
 
 export function StartNativeEditor(arg1:string,arg2:string):Promise<core.EditorSession>;

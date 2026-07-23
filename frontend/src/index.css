@@ -319,12 +319,7 @@ input[type="number"]::-webkit-inner-spin-button {
   background-color: transparent;
 }
 
-[data-glass~="terminal"] [data-panel-type="terminal"],
-[data-glass~="editor"] [data-panel-type="editor"],
-[data-glass~="browser"] [data-panel-type="browser"],
-[data-glass~="notes"] [data-panel-type="note"],
-[data-glass~="notes"] [data-panel-type="todo"],
-[data-glass~="notes"] [data-panel-type="document"] {
+[data-glass~="terminal"] [data-panel-type="terminal"] {
   background-color: color-mix(
     in srgb,
     var(--glass-tint) var(--glass-opacity),
@@ -336,18 +331,6 @@ input[type="number"]::-webkit-inner-spin-button {
 /* The panel's own glass paints the terminal; a second coat here would double the tint. */
 [data-glass~="terminal"] [data-panel-type="terminal"] .terminal-surface {
   background-color: transparent;
-}
-
-/* Inner panel bodies painted with the surface token follow their panel's glass. */
-[data-glass~="editor"] [data-panel-type="editor"] .bg-\[var\(--surface\)\],
-[data-glass~="browser"] [data-panel-type="browser"] .bg-\[var\(--surface\)\],
-[data-glass~="notes"] [data-panel-type="todo"] .bg-\[var\(--surface\)\],
-[data-glass~="notes"] [data-panel-type="document"] .bg-\[var\(--surface\)\] {
-  background-color: color-mix(
-    in srgb,
-    var(--glass-tint) var(--glass-opacity),
-    transparent
-  );
 }
 
 .nav-indicator {
@@ -370,6 +353,55 @@ input[type="number"]::-webkit-inner-spin-button {
 @media (min-width: 40rem) {
   .command-results {
     max-height: min(19rem, calc(100svh - 26rem));
+  }
+}
+
+/* Apple Intelligence-style glow orbiting the command bar */
+@property --ai-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.ai-glow {
+  isolation: isolate;
+  /* Fallback palette; the app sets --ai-c* inline per the glow settings. */
+  --ai-c1: #ff9a62;
+  --ai-c2: #ff4d8d;
+  --ai-c3: #b45cf6;
+  --ai-c4: #38bdf8;
+  --ai-c5: #5eead4;
+}
+
+.ai-glow::before,
+.ai-glow::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 9999px;
+  z-index: -1;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--ai-angle),
+    var(--ai-c1),
+    var(--ai-c2),
+    var(--ai-c3),
+    var(--ai-c4),
+    var(--ai-c5),
+    var(--ai-c1)
+  );
+  animation: ai-spin 5s linear infinite;
+}
+
+.ai-glow::after {
+  inset: -4px;
+  filter: blur(16px);
+  opacity: 0.55;
+}
+
+@keyframes ai-spin {
+  to {
+    --ai-angle: 360deg;
   }
 }
 

@@ -506,6 +506,10 @@ export function StartAppContext(arg1, arg2) {
   return window['go']['core']['App']['StartAppContext'](arg1, arg2);
 }
 
+export function StartDictation() {
+  return window['go']['core']['App']['StartDictation']();
+}
+
 export function StartMockServer(arg1) {
   return window['go']['core']['App']['StartMockServer'](arg1);
 }

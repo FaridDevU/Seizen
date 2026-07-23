@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -11,14 +12,14 @@ import {
   Folder,
   House,
   LayoutGrid,
-  Library,
   ListChecks,
+  Mic,
+  Plus,
   Search,
   Server,
   Settings,
   SquareTerminal,
   StickyNote,
-  X,
   type LucideIcon,
 } from "lucide-react"
 
@@ -28,19 +29,17 @@ import {
   ConfirmClose,
   GetAppearance,
   SetAppearance,
+  StartDictation,
 } from "../wailsjs/go/core/App"
 import { EventsOn, WindowToggleMaximise } from "../wailsjs/runtime/runtime"
 import { Button } from "@/components/ui/button"
 import {
-  isGlassPanel,
   isThemeAccent,
   SettingsPanel,
-  type GlassPanel,
   type GlassTint,
   type ThemeAccent,
 } from "@/components/SettingsPanel"
 import { ConfirmHost } from "@/components/ui/confirm"
-import { ResourcesPanel } from "@/components/ResourcesPanel"
 import { WindowControls } from "@/components/WindowControls"
 import {
   Command,
@@ -73,8 +72,10 @@ import { notifyInBackground } from "@/features/projects/notifications"
 import { ServersView } from "@/features/servers/ServersView"
 import { suspendAllWorkspaces } from "@/features/projects/workspace-lifecycle"
 import { cn } from "@/lib/utils"
+import { isGreetingLang, nextGreeting, type GreetingLang } from "@/lib/greetings"
+import { glowPalettes, isGlowMode, type GlowMode } from "@/lib/glow"
 
-type NavId = "home" | "folders" | "servers" | "resources" | "settings"
+type NavId = "home" | "folders" | "servers" | "settings"
 type FilterId = "all" | "folders" | "actions"
 type EntryGroup = "folder" | "resource" | "navigation" | "action"
 type StartView = "home" | "folders"
@@ -105,7 +106,6 @@ const navigation: NavigationItem[] = [
   { id: "home", label: "Home", icon: House },
   { id: "folders", label: "Folders", icon: Folder },
   { id: "servers", label: "Servers", icon: Server },
-  { id: "resources", label: "Resources", icon: Library },
   { id: "settings", label: "Settings", icon: Settings },
 ]
 
@@ -189,16 +189,6 @@ const filters: { id: FilterId; label: string }[] = [
   { id: "actions", label: "Actions" },
 ]
 
-function formatRecentDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ""
-  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000)
-  if (days <= 0) return "Today"
-  if (days === 1) return "Yesterday"
-  if (days < 7) return `${days} days ago`
-  return date.toLocaleDateString()
-}
-
 const startViewKey = "seizen-start-view"
 const visitedKey = "seizen-visited"
 const glassKey = "seizen-glass"
@@ -206,13 +196,10 @@ const glassTintKey = "seizen-glass-tint"
 const glassLevelKey = "seizen-glass-level"
 const wobblyKey = "seizen-wobbly"
 
-function initialGlassPanels(): GlassPanel[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(glassKey) ?? "[]")
-    return Array.isArray(parsed) ? parsed.filter(isGlassPanel) : []
-  } catch {
-    return []
-  }
+function initialGlassTerminal(): boolean {
+  const stored = localStorage.getItem(glassKey) ?? ""
+  // Legacy value was a JSON array of panel ids; glass is terminal-only now.
+  return stored === "on" || stored.includes("terminal")
 }
 
 function initialNavItem(): NavId {
@@ -243,7 +230,7 @@ function App() {
     return isThemeAccent(cachedAccent) ? cachedAccent : "blue"
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [glassPanels, setGlassPanels] = useState<GlassPanel[]>(initialGlassPanels)
+  const [glassTerminal, setGlassTerminal] = useState(initialGlassTerminal)
   const [glassTint, setGlassTint] = useState<GlassTint>(() =>
     localStorage.getItem(glassTintKey) === "light" ? "light" : "dark",
   )
@@ -254,6 +241,37 @@ function App() {
   const [wobbly, setWobbly] = useState(
     () => localStorage.getItem(wobblyKey) === "on",
   )
+  const [greetingLang, setGreetingLang] = useState<GreetingLang>(() => {
+    const stored = localStorage.getItem("seizen-greeting-lang")
+    return isGreetingLang(stored) ? stored : "es"
+  })
+  const [glowMode, setGlowMode] = useState<GlowMode>(() => {
+    const stored = localStorage.getItem("seizen-glow-mode")
+    return isGlowMode(stored) ? stored : "time"
+  })
+  const [glowPalette, setGlowPalette] = useState<number>(() => {
+    const stored = Number(localStorage.getItem("seizen-glow-palette"))
+    return Number.isInteger(stored) && stored >= 0 && stored < glowPalettes.length
+      ? stored
+      : 1
+  })
+  const [glowColors, setGlowColors] = useState<string[]>(() => {
+    try {
+      const parsed: unknown = JSON.parse(
+        localStorage.getItem("seizen-glow-colors") ?? "[]",
+      )
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every((color) => typeof color === "string")
+      ) {
+        return parsed
+      }
+    } catch {
+      // Fall through to the default mix.
+    }
+    return ["#ff9a62", "#ff4d8d", "#b45cf6"]
+  })
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [feedback, setFeedback] = useState<Feedback | null>(null)
@@ -299,9 +317,32 @@ function App() {
   )
 
   const activeIndex = navigation.findIndex((item) => item.id === activeItem)
-  const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform)
-    ? "⌘K"
-    : "Ctrl K"
+  // Fresh phrase every time Home comes back into view.
+  const greeting = useMemo(
+    () => (activeItem === "home" ? nextGreeting(greetingLang) : ""),
+    [activeItem, greetingLang],
+  )
+  // One random palette per app session; "time" swaps every 4-hour block.
+  const randomGlow = useMemo(
+    () => Math.floor(Math.random() * glowPalettes.length),
+    [],
+  )
+  const glowStyle = useMemo(() => {
+    const set =
+      glowMode === "custom"
+        ? glowColors
+        : glowPalettes[
+            glowMode === "fixed"
+              ? glowPalette
+              : glowMode === "random"
+                ? randomGlow
+                : Math.floor(new Date().getHours() / 4)
+          ]
+    return Object.fromEntries(
+      Array.from({ length: 5 }, (_, i) => [`--ai-c${i + 1}`, set[i % set.length]]),
+    ) as CSSProperties
+    // activeItem refreshes the hour-based pick whenever you navigate.
+  }, [glowMode, glowPalette, glowColors, randomGlow, activeItem])
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark)
@@ -316,7 +357,7 @@ function App() {
 
   useEffect(() => {
     const root = document.documentElement
-    root.dataset.glass = glassPanels.join(" ")
+    root.dataset.glass = glassTerminal ? "terminal" : ""
     root.style.setProperty(
       "--glass-tint",
       glassTint === "light" ? "#ffffff" : "#000000",
@@ -328,12 +369,12 @@ function App() {
       "--glass-blur",
       `${Math.round((100 - glassLevel) * 0.2 * 10) / 10}px`,
     )
-    localStorage.setItem(glassKey, JSON.stringify(glassPanels))
+    localStorage.setItem(glassKey, glassTerminal ? "on" : "off")
     localStorage.setItem(glassTintKey, glassTint)
     localStorage.setItem(glassLevelKey, String(glassLevel))
     root.dataset.wobbly = wobbly ? "on" : "off"
     localStorage.setItem(wobblyKey, wobbly ? "on" : "off")
-  }, [glassPanels, glassTint, glassLevel, wobbly])
+  }, [glassTerminal, glassTint, glassLevel, wobbly])
 
   useEffect(() => {
     let mounted = true
@@ -356,29 +397,6 @@ function App() {
     return () => {
       mounted = false
     }
-  }, [])
-
-  useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent) => {
-      if (
-        !event.repeat &&
-        (event.metaKey || event.ctrlKey) &&
-        event.key.toLowerCase() === "k"
-      ) {
-        event.preventDefault()
-        setPaletteOpen((current) => {
-          const next = !current
-          if (!next) {
-            setQuery("")
-            setActiveFilter("all")
-          }
-          return next
-        })
-      }
-    }
-
-    window.addEventListener("keydown", handleShortcut)
-    return () => window.removeEventListener("keydown", handleShortcut)
   }, [])
 
   useEffect(() => {
@@ -497,7 +515,7 @@ function App() {
     setFeedback({ message: `${entry.label} opened`, tone: "success" })
   }
 
-  // Recents power both the Home view and the palette's Spaces group.
+  // Recents power the palette's Spaces group.
   const loadRecents = async () => {
     try {
       const projects = await projectService.list()
@@ -512,8 +530,8 @@ function App() {
   }
 
   useEffect(() => {
-    if (paletteOpen || activeItem === "home") void loadRecents()
-  }, [paletteOpen, activeItem])
+    if (paletteOpen) void loadRecents()
+  }, [paletteOpen])
 
   const openProject = (project: Project) => {
     closePalette()
@@ -644,19 +662,24 @@ function App() {
         </nav>
 
         {((activeItem !== "folders" &&
-          activeItem !== "resources" &&
           activeItem !== "settings" &&
           activeItem !== "servers") ||
           paletteOpen) && (
           <section
             aria-label="Quick search"
-            className="pointer-events-none absolute inset-0 z-[120] flex items-center justify-center px-4 pb-16 lg:pb-0"
+            className="pointer-events-none absolute inset-0 z-[120] flex flex-col items-center justify-center px-4 pb-16 lg:pb-0"
           >
+          {activeItem === "home" && (
+            <p className="view-enter mb-7 max-w-[34rem] text-center text-2xl font-semibold tracking-[-0.02em] text-[var(--on-surface)] [text-wrap:balance]">
+              {greeting}
+            </p>
+          )}
           <div
             ref={paletteRef}
+            style={glowStyle}
             className={cn(
-              "pointer-events-auto relative w-full max-w-[28rem] transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)] sm:max-w-[29rem] 2xl:max-w-[32rem]",
-              paletteOpen && "-translate-y-12 sm:-translate-y-10",
+              "ai-glow pointer-events-auto relative w-full max-w-[28rem] transition-transform duration-300 ease-[cubic-bezier(.22,1,.36,1)] sm:max-w-[29rem] 2xl:max-w-[32rem]",
+              paletteOpen && query.trim() !== "" && "-translate-y-12 sm:-translate-y-10",
             )}
           >
             <Command
@@ -677,10 +700,10 @@ function App() {
                     "border-[var(--focus-border)] shadow-[0_1px_2px_var(--shadow-soft),0_10px_28px_var(--shadow-elevated),0_0_0_3px_var(--focus-ring)]",
                 )}
               >
-                <Search
+                <Plus
                   aria-hidden="true"
-                  className="size-[1.08rem] shrink-0 text-[var(--primary)]"
-                  strokeWidth={1.75}
+                  className="size-[1.35rem] shrink-0 text-[var(--primary)]"
+                  strokeWidth={2.2}
                 />
 
                 {paletteOpen ? (
@@ -688,7 +711,6 @@ function App() {
                     ref={inputRef}
                     value={query}
                     onValueChange={setQuery}
-                    aria-keyshortcuts="Meta+K Control+K"
                     placeholder="Search folders, resources, or actions..."
                   />
                 ) : (
@@ -697,39 +719,35 @@ function App() {
                     type="text"
                     role="combobox"
                     aria-label="Search project or run action"
-                    aria-keyshortcuts="Meta+K Control+K"
                     aria-expanded="false"
                     aria-haspopup="listbox"
                     autoComplete="off"
                     placeholder="Search project or run action..."
                     className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-[var(--on-surface-variant)]"
-                    onFocus={() => setPaletteOpen(true)}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
                   />
                 )}
 
-                {query ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--state-layer)] hover:text-[var(--on-surface)]"
-                    aria-label="Clear search"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => {
-                      setQuery("")
-                      inputRef.current?.focus()
-                    }}
-                  >
-                    <X className="size-4" strokeWidth={1.7} />
-                  </Button>
-                ) : (
-                  <kbd className="flex h-7 min-w-10 shrink-0 items-center justify-center rounded-[0.6rem] bg-[var(--surface-container)] px-2.5 font-sans text-[0.68rem] font-medium tracking-[0.02em] text-[var(--on-surface-variant)] shadow-[inset_0_0_0_1px_var(--outline-variant)]">
-                    {paletteOpen ? "Esc" : shortcutLabel}
-                  </kbd>
-                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-9 rounded-full text-[var(--on-surface-variant)] hover:bg-[var(--state-layer)] hover:text-[var(--primary)]"
+                  aria-label="Dictate with your voice"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    inputRef.current?.focus()
+                    void StartDictation().catch(() =>
+                      setFeedback({ message: "Dictation unavailable", tone: "error" }),
+                    )
+                  }}
+                >
+                  <Mic className="size-[1.25rem]" strokeWidth={2.1} />
+                </Button>
               </div>
 
-              {paletteOpen && (
+              {paletteOpen && query.trim() !== "" && (
                 <div className="command-panel absolute inset-x-0 top-full mt-2.5 overflow-hidden rounded-[1.35rem] border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_1px_3px_var(--shadow-soft),0_18px_44px_var(--shadow-elevated)] backdrop-blur-2xl">
                   <div
                     role="toolbar"
@@ -843,59 +861,6 @@ function App() {
           </section>
         )}
 
-        {activeItem === "home" && (
-          <section
-            aria-label="Home"
-            className="view-enter absolute inset-x-0 bottom-0 top-[54%] z-10 overflow-y-auto px-4 pb-24 lg:pb-10"
-          >
-            <div className="mx-auto w-full max-w-[32rem]">
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                {quickActions.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    onClick={() => void runQuickAction(entry.action)}
-                    className="flex h-9 items-center gap-2 rounded-full border border-[var(--outline-variant)] bg-[var(--surface-container-high)] px-4 text-xs font-medium text-[var(--on-surface)] shadow-[0_1px_3px_var(--shadow-soft)] outline-none transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:bg-[var(--surface-container)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-[0.97]"
-                  >
-                    <entry.icon className="size-3.5 text-[var(--primary)]" strokeWidth={1.7} />
-                    {entry.label}
-                  </button>
-                ))}
-              </div>
-
-              {recentProjects.length > 0 && (
-                <div className="mt-8">
-                  <h2 className="px-1 text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-[var(--on-surface-variant)]">
-                    Recent
-                  </h2>
-                  <div className="mt-2 space-y-1">
-                    {recentProjects.slice(0, 6).map((project) => (
-                      <button
-                        key={project.id}
-                        type="button"
-                        onClick={() => openProject(project)}
-                        className="flex w-full items-center gap-3 rounded-2xl border border-transparent px-3 py-2.5 text-left outline-none transition-colors hover:border-[var(--outline-variant)] hover:bg-[var(--surface-container)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-                      >
-                        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--primary-container)] text-[0.68rem] font-semibold text-[var(--on-primary-container)]">
-                          {project.name.slice(0, 2).toUpperCase()}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm font-medium">
-                            {project.name}
-                          </span>
-                          <span className="block truncate text-xs text-[var(--on-surface-variant)]">
-                            {formatRecentDate(project.updatedAt)}
-                          </span>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
         <div className={cn(activeItem !== "folders" && "hidden")}>
           <ProjectLibrary
             initialProjectId={workspaceTarget?.projectId}
@@ -914,7 +879,6 @@ function App() {
 
         {activeItem === "servers" && <ServersView onOpen={openServer} />}
 
-        {activeItem === "resources" && <ResourcesPanel />}
 
         {settingsOpen && (
           <SettingsPanel
@@ -930,14 +894,28 @@ function App() {
               localStorage.setItem(startViewKey, next)
               setFeedback({ message: "Start view saved", tone: "success" })
             }}
-            glassPanels={glassPanels}
-            onGlassToggle={(panel) =>
-              setGlassPanels((current) =>
-                current.includes(panel)
-                  ? current.filter((item) => item !== panel)
-                  : [...current, panel],
-              )
-            }
+            greetingLang={greetingLang}
+            onGreetingLangChange={(next) => {
+              setGreetingLang(next)
+              localStorage.setItem("seizen-greeting-lang", next)
+            }}
+            glowMode={glowMode}
+            onGlowModeChange={(next) => {
+              setGlowMode(next)
+              localStorage.setItem("seizen-glow-mode", next)
+            }}
+            glowPalette={glowPalette}
+            onGlowPaletteChange={(next) => {
+              setGlowPalette(next)
+              localStorage.setItem("seizen-glow-palette", String(next))
+            }}
+            glowColors={glowColors}
+            onGlowColorsChange={(next) => {
+              setGlowColors(next)
+              localStorage.setItem("seizen-glow-colors", JSON.stringify(next))
+            }}
+            glassTerminal={glassTerminal}
+            onGlassTerminalChange={setGlassTerminal}
             glassTint={glassTint}
             onGlassTintChange={setGlassTint}
             glassLevel={glassLevel}

@@ -210,17 +210,14 @@ function ResourcesPanel() {
     }
   }
 
+  // Rendered inside the Settings modal, so no page chrome of its own.
   return (
-    <section className="view-enter absolute inset-0 overflow-y-auto px-4 pb-28 pt-24 sm:px-7 lg:pl-28 lg:pr-10 lg:pt-24 2xl:pl-36 2xl:pr-14 2xl:pt-28">
-      <div className="mx-auto w-full max-w-[68rem]">
-        <h1 className="display-font text-[2.15rem] font-light tracking-[-0.035em] sm:text-[2.6rem]">
-          Resources
-        </h1>
-        <p className="mt-2 text-[0.8rem] font-medium text-[var(--on-surface-variant)]">
-          Editors, AI agents, and environments available within Seizen
-        </p>
+    <div>
+      <p className="text-xs text-[var(--on-surface-variant)]">
+        Editors, AI agents, and environments available within Seizen
+      </p>
 
-        <div className="mt-7">
+      <div className="mt-4">
           <SectionCard
             icon={Bot}
             title="AI agents"
@@ -231,7 +228,7 @@ function ResourcesPanel() {
               <SectionLoading label="Loading agents…" />
             ) : (
               <>
-                <div className="grid sm:grid-cols-2 sm:divide-x sm:divide-[var(--outline-variant)] lg:grid-cols-3">
+                <div className="grid sm:grid-cols-2 sm:divide-x sm:divide-[var(--outline-variant)]">
                   {agentRows.map((agent) => (
                     <div key={agent.id} className="space-y-2.5 px-4 py-3.5">
                       <div className="flex items-center gap-2">
@@ -300,7 +297,7 @@ function ResourcesPanel() {
           </SectionCard>
         </div>
 
-        <div className="mt-4 grid items-start gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid items-start gap-4">
           <SectionCard
             icon={Plug}
             title="Code editors"
@@ -507,8 +504,7 @@ function ResourcesPanel() {
             </div>
           </SectionCard>
         </div>
-      </div>
-    </section>
+    </div>
   )
 }
 

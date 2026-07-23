@@ -249,7 +249,7 @@ test("Tools adds managed photos as persistent panels", async () => {
     source("features/projects/workspace-model.ts"),
     source("features/projects/project-service.ts"),
   ])
-  assert.match(workspace, /label="Tools"[\s\S]*Add photo/)
+  assert.match(workspace, /runWorkspaceMenuAction\(addPhoto, "documents"\)/)
   assert.match(workspace, /chooseProjectWorkspacePhoto\(project\)/)
   assert.match(workspace, /type: "photo"[\s\S]*assetId: asset\.assetId/)
   assert.match(workspace, /<WorkspacePhotoPanel/)
