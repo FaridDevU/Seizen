@@ -13,14 +13,14 @@
 </div>
 
 <div align="center">
-  <img src=".github/media/demo-workspace-agents.gif" alt="Filling a workspace with Claude Code, Codex, and VS Code" width="760" />
+  <img src=".github/media/hero-workspace.png" alt="A Seizen workspace: Claude Code terminals, Codex, OpenCode, VS Code, and Spotify as panels on one canvas" width="820" />
 </div>
 
 ---
 
 ## What is it?
 
-Seizen is a desktop app that turns every project into a **workspace canvas**. Right-click the canvas and drop in what that project needs: Claude Code, Codex, or OpenCode running in real WSL terminals, VS Code or Zed embedded as panels, a browser, your music. Everything stays where you left it — per project.
+Seizen is a desktop app that turns every project into a **workspace canvas**. Right-click the canvas and drop in what that project needs: Claude Code, Codex, or OpenCode in real terminals, VS Code as a panel, Zed in its own window, a browser, your music. Everything stays where you left it — per project.
 
 No window juggling. Open a project and its whole working environment comes back with it.
 
@@ -29,6 +29,18 @@ No window juggling. Open a project and its whole working environment comes back 
 ## Features
 
 Everything below is captured from the real, compiled app — no mockups.
+
+### One canvas per project
+Enter a project and build its workspace: AI agents, editors, and terminals as panels you drag, resize, and arrange like windows on a desk.
+
+<div align="center"><img src=".github/media/demo-workspace-agents.gif" alt="Adding Claude Code, Codex, and VS Code to a workspace" width="720" /></div>
+
+### A library that remembers
+Your projects live in a local library with live thumbnails of each workspace. Each one keeps its own panels: jump between projects and the whole environment swaps with it.
+
+<div align="center"><img src=".github/media/library.png" alt="The local library with live workspace thumbnails" width="720" /></div>
+
+<div align="center"><img src=".github/media/demo-switch-projects.gif" alt="Switching between projects" width="720" /></div>
 
 ### Talk to your app
 The Home bar is an assistant. Ask, and it opens projects, adds panels, or answers — the oval morphs into a conversation with per-chat history. Each chat is an isolated AI session that resumes on demand: nothing runs in the background between messages. While it thinks, the whole window glows with your chosen palette, Apple-Intelligence style.
@@ -42,16 +54,6 @@ Every workspace has its own assistant in the bottom bar. It sees the project's f
 No API key needed: connect your existing Claude (Pro/Max) or ChatGPT subscription through its official CLI with an elegant in-app sign-in — no terminals ever appear. Or drop in an Anthropic API key if you prefer. Pick the model per provider.
 
 <div align="center"><img src=".github/media/agent-apis.jpg" alt="Agent APIs: subscription providers and model choice" width="720" /></div>
-
-### One canvas per project
-Enter a project and build its workspace: AI agents, editors, and terminals as panels you drag, resize, and arrange like windows on a desk.
-
-<div align="center"><img src=".github/media/demo-workspace-agents.gif" alt="Adding Claude Code, Codex, and VS Code to a workspace" width="720" /></div>
-
-### Switch projects, keep everything
-Each project remembers its own panels. Jump from one to another and the whole environment swaps with it — here, one project runs Claude, Codex, and VS Code while the other keeps Zed and Spotify.
-
-<div align="center"><img src=".github/media/demo-switch-projects.gif" alt="Switching between projects" width="720" /></div>
 
 ### Agents, editors, and environments in one place
 Manage where each AI agent runs (per-agent WSL distribution or Windows), whether it can skip approvals, and which editors and WSL environments Seizen installs and manages for you.
