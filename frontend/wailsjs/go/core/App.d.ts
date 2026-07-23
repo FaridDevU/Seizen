@@ -16,6 +16,8 @@ export function CancelAgentTaskContext(arg1:string,arg2:string,arg3:string,arg4:
 
 export function CancelClose():Promise<void>;
 
+export function CancelImport():Promise<void>;
+
 export function CaptureAppPreview(arg1:string):Promise<core.BrowserAutomationResult>;
 
 export function CheckServerHealth(arg1:string):Promise<core.ServerHealth>;
@@ -23,6 +25,8 @@ export function CheckServerHealth(arg1:string):Promise<core.ServerHealth>;
 export function ChooseDirectory(arg1:string):Promise<string>;
 
 export function ChooseProjectWorkspaceBackground(arg1:string,arg2:string):Promise<string>;
+
+export function ChooseProjectWorkspaceFile(arg1:string,arg2:string):Promise<core.WorkspaceDocumentAsset>;
 
 export function ChooseProjectWorkspacePhoto(arg1:string,arg2:string):Promise<core.WorkspacePhotoAsset>;
 
@@ -60,6 +64,8 @@ export function DeleteApp(arg1:string):Promise<void>;
 
 export function DeleteProject(arg1:string,arg2:string):Promise<void>;
 
+export function DeleteProjectWorkspaceAsset(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function DeleteProjectWorkspacePhoto(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function DeleteServer(arg1:string):Promise<void>;
@@ -73,6 +79,8 @@ export function DetectTerminalApp(arg1:string):Promise<core.ManagedAppDetection>
 export function DiscardExperiment(arg1:core.ExperimentCleanupInput):Promise<core.Experiment>;
 
 export function DiscoverApps(arg1:string):Promise<Array<core.AppCandidate>>;
+
+export function EstimateImport(arg1:string):Promise<core.ImportEstimate>;
 
 export function ExportProject(arg1:string,arg2:string):Promise<string>;
 
@@ -123,6 +131,8 @@ export function GetSpotifyPlaybackSince(arg1:string):Promise<core.MediaPlaybackS
 export function GetWSLDistributions():Promise<Array<core.WSLDistributionResource>>;
 
 export function GroupDuplicate(arg1:core.DuplicateGroup):Promise<void>;
+
+export function ImportProjectWorkspaceAsset(arg1:string,arg2:string,arg3:string):Promise<core.WorkspaceDocumentAsset>;
 
 export function ImportProjects(arg1:Array<string>):Promise<Array<core.Project>>;
 
@@ -236,6 +246,8 @@ export function SetProjectGitHub(arg1:string,arg2:string,arg3:string):Promise<co
 
 export function SetProjectRoot(arg1:string):Promise<string>;
 
+export function SetProjectThumbnail(arg1:string,arg2:string):Promise<void>;
+
 export function SmokeTestApp(arg1:string):Promise<core.BrowserAutomationResult>;
 
 export function StartApp(arg1:string):Promise<core.ProjectApp>;
@@ -257,6 +269,8 @@ export function StartProjectEditorContext(arg1:string,arg2:string,arg3:string):P
 export function StartProjectTerminal(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function StartProjectTerminalContext(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function StartProjectTerminalInFolder(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
 
 export function StartServer(arg1:string):Promise<core.Server>;
 

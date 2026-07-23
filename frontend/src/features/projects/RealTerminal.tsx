@@ -123,7 +123,8 @@ function RealTerminal({
     if (!host) return
 
     const terminal = new Terminal({
-      allowTransparency: false,
+      // Transparent so the host div carries the color; glass mode dims the host.
+      allowTransparency: true,
       convertEol: false,
       cursorBlink: true,
       disableStdin: !sessionIdRef.current || statusRef.current !== "running",
@@ -132,7 +133,7 @@ function RealTerminal({
       fontSize: 12,
       scrollback: 5_000,
       theme: {
-        background: "#111513",
+        background: "#11151300",
         foreground: "#e4e9e4",
         cursor: "#a7c4ae",
         cursorAccent: "#111513",
@@ -419,7 +420,7 @@ function RealTerminal({
     <div
       aria-label={ariaLabel}
       className={cn(
-        "relative size-full min-h-0 overflow-hidden bg-[#111513]",
+        "terminal-surface relative size-full min-h-0 overflow-hidden",
         className,
       )}
     >

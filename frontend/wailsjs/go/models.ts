@@ -741,6 +741,22 @@ export namespace core {
 		    return a;
 		}
 	}
+	export class ImportEstimate {
+	    bytes: number;
+	    files: number;
+	    large: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImportEstimate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.bytes = source["bytes"];
+	        this.files = source["files"];
+	        this.large = source["large"];
+	    }
+	}
 	export class ManagedAppDetection {
 	    terminalSessionId: string;
 	    processId: number;
@@ -815,6 +831,7 @@ export namespace core {
 	    groupId?: string;
 	    groupTitle?: string;
 	    variantLabel?: string;
+	    missing: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Project(source);
@@ -835,6 +852,7 @@ export namespace core {
 	        this.groupId = source["groupId"];
 	        this.groupTitle = source["groupTitle"];
 	        this.variantLabel = source["variantLabel"];
+	        this.missing = source["missing"];
 	    }
 	}
 	
@@ -1212,6 +1230,22 @@ export namespace core {
 	        this.installed = source["installed"];
 	        this.status = source["status"];
 	        this.errorMessage = source["errorMessage"];
+	    }
+	}
+	export class WorkspaceDocumentAsset {
+	    assetId: string;
+	    kind: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WorkspaceDocumentAsset(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.assetId = source["assetId"];
+	        this.kind = source["kind"];
+	        this.name = source["name"];
 	    }
 	}
 	export class WorkspacePhotoAsset {

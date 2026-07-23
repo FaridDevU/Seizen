@@ -175,6 +175,13 @@ func newAgentMCPServer(client *agentRPCClient) *mcp.Server {
 	addAgentTool(server, client, "seizen_app_get_runtime_diagnostics", "Return the verified process, run, endpoint, logs, exit and optional console diagnostics.", agentAppIDInput{})
 	addAgentExperimentTools(server, client)
 	addAgentServerTools(server, client)
+	addAgentTool(server, client, "seizen_desk_open", "Open a project document (PDF, Word, image, video, text) or an HTTP(S) URL as a panel on the user's board.", agentDeskOpenInput{})
+	addAgentTool(server, client, "seizen_desk_add_note", "Place a markdown note panel on the user's board.", agentDeskNoteInput{})
+	addAgentTool(server, client, "seizen_desk_add_todo", "Place a to-do checklist panel on the user's board.", agentDeskTodoInput{})
+	addAgentTool(server, client, "seizen_desk_tidy", "Arrange the panels on the user's board neatly.", agentEmptyInput{})
+	addAgentTool(server, client, "seizen_files_list", "List files and folders under a project-relative path (read-only).", agentFilesListInput{})
+	addAgentTool(server, client, "seizen_files_move", "Move a file or folder within the project. Requires single-use user approval.", agentFilesMoveInput{})
+	addAgentTool(server, client, "seizen_files_rename", "Rename a file or folder within the project. Requires single-use user approval.", agentFilesRenameInput{})
 	return server
 }
 

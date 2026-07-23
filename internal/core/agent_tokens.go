@@ -66,6 +66,13 @@ var appAgentPermissions = []string{
 	"seizen_experiment_discard",
 	"seizen_experiment_archive",
 	"seizen_experiment_restore",
+	"seizen_desk_open",
+	"seizen_desk_add_note",
+	"seizen_desk_add_todo",
+	"seizen_desk_tidy",
+	"seizen_files_list",
+	"seizen_files_move",
+	"seizen_files_rename",
 }
 
 type AgentTokenScope struct {

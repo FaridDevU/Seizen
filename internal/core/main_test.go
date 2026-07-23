@@ -30,10 +30,11 @@ func TestWebviewDataPersists(t *testing.T) {
 	}
 }
 
-func TestDenyFraming(t *testing.T) {
+func TestAssetMiddlewareFraming(t *testing.T) {
+	app := NewApp()
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	denyFraming(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+	app.assetMiddleware()(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusNoContent)
 	})).ServeHTTP(recorder, request)
 
@@ -42,6 +43,10 @@ func TestDenyFraming(t *testing.T) {
 	}
 	if got := recorder.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Fatalf("X-Frame-Options = %q", got)
+	}
+	// Non-asset paths fall through to the frontend handler.
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
 }
 

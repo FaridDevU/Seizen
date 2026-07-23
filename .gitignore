@@ -14,3 +14,6 @@ nul
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# Análisis de Deska (referencia local, no versionar)
+Deska-Analisis/

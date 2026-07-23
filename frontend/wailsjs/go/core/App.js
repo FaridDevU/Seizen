@@ -30,6 +30,10 @@ export function CancelClose() {
   return window['go']['core']['App']['CancelClose']();
 }
 
+export function CancelImport() {
+  return window['go']['core']['App']['CancelImport']();
+}
+
 export function CaptureAppPreview(arg1) {
   return window['go']['core']['App']['CaptureAppPreview'](arg1);
 }
@@ -44,6 +48,10 @@ export function ChooseDirectory(arg1) {
 
 export function ChooseProjectWorkspaceBackground(arg1, arg2) {
   return window['go']['core']['App']['ChooseProjectWorkspaceBackground'](arg1, arg2);
+}
+
+export function ChooseProjectWorkspaceFile(arg1, arg2) {
+  return window['go']['core']['App']['ChooseProjectWorkspaceFile'](arg1, arg2);
 }
 
 export function ChooseProjectWorkspacePhoto(arg1, arg2) {
@@ -118,6 +126,10 @@ export function DeleteProject(arg1, arg2) {
   return window['go']['core']['App']['DeleteProject'](arg1, arg2);
 }
 
+export function DeleteProjectWorkspaceAsset(arg1, arg2, arg3) {
+  return window['go']['core']['App']['DeleteProjectWorkspaceAsset'](arg1, arg2, arg3);
+}
+
 export function DeleteProjectWorkspacePhoto(arg1, arg2, arg3) {
   return window['go']['core']['App']['DeleteProjectWorkspacePhoto'](arg1, arg2, arg3);
 }
@@ -144,6 +156,10 @@ export function DiscardExperiment(arg1) {
 
 export function DiscoverApps(arg1) {
   return window['go']['core']['App']['DiscoverApps'](arg1);
+}
+
+export function EstimateImport(arg1) {
+  return window['go']['core']['App']['EstimateImport'](arg1);
 }
 
 export function ExportProject(arg1, arg2) {
@@ -244,6 +260,10 @@ export function GetWSLDistributions() {
 
 export function GroupDuplicate(arg1) {
   return window['go']['core']['App']['GroupDuplicate'](arg1);
+}
+
+export function ImportProjectWorkspaceAsset(arg1, arg2, arg3) {
+  return window['go']['core']['App']['ImportProjectWorkspaceAsset'](arg1, arg2, arg3);
 }
 
 export function ImportProjects(arg1) {
@@ -470,6 +490,10 @@ export function SetProjectRoot(arg1) {
   return window['go']['core']['App']['SetProjectRoot'](arg1);
 }
 
+export function SetProjectThumbnail(arg1, arg2) {
+  return window['go']['core']['App']['SetProjectThumbnail'](arg1, arg2);
+}
+
 export function SmokeTestApp(arg1) {
   return window['go']['core']['App']['SmokeTestApp'](arg1);
 }
@@ -512,6 +536,10 @@ export function StartProjectTerminal(arg1, arg2, arg3) {
 
 export function StartProjectTerminalContext(arg1, arg2, arg3) {
   return window['go']['core']['App']['StartProjectTerminalContext'](arg1, arg2, arg3);
+}
+
+export function StartProjectTerminalInFolder(arg1, arg2, arg3, arg4) {
+  return window['go']['core']['App']['StartProjectTerminalInFolder'](arg1, arg2, arg3, arg4);
 }
 
 export function StartServer(arg1) {

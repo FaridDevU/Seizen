@@ -7,14 +7,17 @@ import {
 import {
   Check,
   CircleAlert,
-  Copy,
   FileText,
   Folder,
   House,
+  LayoutGrid,
   Library,
+  ListChecks,
   Search,
   Server,
   Settings,
+  SquareTerminal,
+  StickyNote,
   X,
   type LucideIcon,
 } from "lucide-react"
@@ -29,8 +32,11 @@ import {
 import { EventsOn, WindowToggleMaximise } from "../wailsjs/runtime/runtime"
 import { Button } from "@/components/ui/button"
 import {
+  isGlassPanel,
   isThemeAccent,
   SettingsPanel,
+  type GlassPanel,
+  type GlassTint,
   type ThemeAccent,
 } from "@/components/SettingsPanel"
 import { ConfirmHost } from "@/components/ui/confirm"
@@ -52,14 +58,26 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { ProjectLibrary } from "@/features/projects/ProjectLibrary"
-import type { GlobalServer } from "@/features/projects/project-service"
+import {
+  projectService,
+  type GlobalServer,
+  type Project,
+} from "@/features/projects/project-service"
+import {
+  queueQuickAction,
+  requestOpenProject,
+  requestWorkspaceAction,
+  type WorkspaceQuickAction,
+} from "@/features/projects/workspace-actions"
+import { notifyInBackground } from "@/features/projects/notifications"
 import { ServersView } from "@/features/servers/ServersView"
 import { suspendAllWorkspaces } from "@/features/projects/workspace-lifecycle"
 import { cn } from "@/lib/utils"
 
 type NavId = "home" | "folders" | "servers" | "resources" | "settings"
-type FilterId = "all" | "folders" | "resources" | "actions"
+type FilterId = "all" | "folders" | "actions"
 type EntryGroup = "folder" | "resource" | "navigation" | "action"
+type StartView = "home" | "folders"
 
 type NavigationItem = {
   id: NavId
@@ -103,27 +121,6 @@ const folderEntries: PaletteEntry[] = [
   },
 ]
 
-const resourceEntries: PaletteEntry[] = [
-  {
-    id: "resource-interface-guide",
-    label: "Interface guide",
-    description: "Reference document",
-    group: "resource",
-    icon: FileText,
-    keywords: ["guide", "document", "interface", "resource"],
-    target: "resources",
-  },
-  {
-    id: "resource-visual-library",
-    label: "Visual library",
-    description: "128 resources",
-    group: "resource",
-    icon: Library,
-    keywords: ["library", "icons", "images", "resource"],
-    target: "resources",
-  },
-]
-
 const navigationEntries: PaletteEntry[] = navigation.map((item) => ({
   id: `nav-${item.id}`,
   label: item.label,
@@ -134,28 +131,110 @@ const navigationEntries: PaletteEntry[] = navigation.map((item) => ({
   target: item.id,
 }))
 
-const actionEntries: PaletteEntry[] = [
+// Every quick action is deterministic: it works with no assistant and no API
+// key, in the current workspace or by opening the most recent one.
+const quickActions: Array<{
+  id: string
+  label: string
+  description: string
+  icon: LucideIcon
+  keywords: string[]
+  action: WorkspaceQuickAction
+}> = [
   {
-    id: "action-copy-link",
-    label: "Copy space link",
-    description: "Save the address to the clipboard",
-    group: "action",
-    icon: Copy,
-    keywords: ["copy", "link", "share", "url"],
-    action: "copy-link",
+    id: "action-open-document",
+    label: "Open document",
+    description: "PDF, Word, image, or video on your board",
+    icon: FileText,
+    keywords: ["open", "document", "abrir", "documento", "pdf", "word", "docx"],
+    action: "document",
+  },
+  {
+    id: "action-new-note",
+    label: "New note",
+    description: "A sticky note on your board",
+    icon: StickyNote,
+    keywords: ["note", "nota", "write", "apuntar", "sticky"],
+    action: "note",
+  },
+  {
+    id: "action-new-todo",
+    label: "New to-do list",
+    description: "A checklist on your board",
+    icon: ListChecks,
+    keywords: ["todo", "tareas", "lista", "checklist", "tasks"],
+    action: "todo",
+  },
+  {
+    id: "action-tidy",
+    label: "Tidy up the board",
+    description: "Arrange every panel neatly",
+    icon: LayoutGrid,
+    keywords: ["tidy", "ordenar", "arrange", "organizar", "clean"],
+    action: "tidy",
+  },
+  {
+    id: "action-new-terminal",
+    label: "New terminal",
+    description: "A WSL terminal on your board",
+    icon: SquareTerminal,
+    keywords: ["terminal", "wsl", "shell", "consola"],
+    action: "terminal",
   },
 ]
 
 const filters: { id: FilterId; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "folders", label: "Folders" },
-  { id: "resources", label: "Resources" },
+  { id: "folders", label: "Spaces" },
   { id: "actions", label: "Actions" },
 ]
 
+function formatRecentDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ""
+  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000)
+  if (days <= 0) return "Today"
+  if (days === 1) return "Yesterday"
+  if (days < 7) return `${days} days ago`
+  return date.toLocaleDateString()
+}
+
+const startViewKey = "seizen-start-view"
+const visitedKey = "seizen-visited"
+const glassKey = "seizen-glass"
+const glassTintKey = "seizen-glass-tint"
+const glassLevelKey = "seizen-glass-level"
+const wobblyKey = "seizen-wobbly"
+
+function initialGlassPanels(): GlassPanel[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(glassKey) ?? "[]")
+    return Array.isArray(parsed) ? parsed.filter(isGlassPanel) : []
+  } catch {
+    return []
+  }
+}
+
+function initialNavItem(): NavId {
+  const preference = localStorage.getItem(startViewKey)
+  if (preference === "home" || preference === "folders") return preference
+  // Very first run lands on Home so a fresh install greets you with actions,
+  // not an empty library; every later start keeps the classic library landing.
+  if (!localStorage.getItem(visitedKey)) {
+    localStorage.setItem(visitedKey, "1")
+    return "home"
+  }
+  return "folders"
+}
+
 function App() {
-  const [activeItem, setActiveItem] = useState<NavId>("folders")
+  const [activeItem, setActiveItem] = useState<NavId>(initialNavItem)
   const [activeFilter, setActiveFilter] = useState<FilterId>("all")
+  const [startView, setStartView] = useState<StartView>(() => {
+    const preference = localStorage.getItem(startViewKey)
+    return preference === "home" ? "home" : "folders"
+  })
+  const [recentProjects, setRecentProjects] = useState<Project[]>([])
   const [isDark, setIsDark] = useState(
     () => localStorage.getItem("seizen-theme") === "dark",
   )
@@ -163,6 +242,18 @@ function App() {
     const cachedAccent = localStorage.getItem("seizen-accent")
     return isThemeAccent(cachedAccent) ? cachedAccent : "blue"
   })
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [glassPanels, setGlassPanels] = useState<GlassPanel[]>(initialGlassPanels)
+  const [glassTint, setGlassTint] = useState<GlassTint>(() =>
+    localStorage.getItem(glassTintKey) === "light" ? "light" : "dark",
+  )
+  const [glassLevel, setGlassLevel] = useState<number>(() => {
+    const parsed = Number(localStorage.getItem(glassLevelKey))
+    return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : 50
+  })
+  const [wobbly, setWobbly] = useState(
+    () => localStorage.getItem(wobblyKey) === "on",
+  )
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [feedback, setFeedback] = useState<Feedback | null>(null)
@@ -176,6 +267,19 @@ function App() {
   const appearanceGenerationRef = useRef(0)
   const appearanceSaveRef = useRef<Promise<void>>(Promise.resolve())
   const closingRef = useRef(false)
+
+  // The assistant asking for approval is the one signal worth interrupting for
+  // when the window is in the background.
+  useEffect(
+    () =>
+      EventsOn("agent.approval.requested", () => {
+        void notifyInBackground(
+          "Seizen",
+          "The assistant needs your approval to continue",
+        )
+      }),
+    [],
+  )
 
   useEffect(
     () =>
@@ -195,7 +299,6 @@ function App() {
   )
 
   const activeIndex = navigation.findIndex((item) => item.id === activeItem)
-  const isBrowsing = query.trim().length > 0 || activeFilter !== "all"
   const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform)
     ? "⌘K"
     : "Ctrl K"
@@ -210,6 +313,27 @@ function App() {
       .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
       ?.setAttribute("content", isDark ? "#171918" : "#f7f6f3")
   }, [accent, isDark])
+
+  useEffect(() => {
+    const root = document.documentElement
+    root.dataset.glass = glassPanels.join(" ")
+    root.style.setProperty(
+      "--glass-tint",
+      glassTint === "light" ? "#ffffff" : "#000000",
+    )
+    // The slider stores "how transparent"; CSS wants "how much tint".
+    root.style.setProperty("--glass-opacity", `${100 - glassLevel}%`)
+    // Blur fades out with transparency so the top of the slider is true glass.
+    root.style.setProperty(
+      "--glass-blur",
+      `${Math.round((100 - glassLevel) * 0.2 * 10) / 10}px`,
+    )
+    localStorage.setItem(glassKey, JSON.stringify(glassPanels))
+    localStorage.setItem(glassTintKey, glassTint)
+    localStorage.setItem(glassLevelKey, String(glassLevel))
+    root.dataset.wobbly = wobbly ? "on" : "off"
+    localStorage.setItem(wobblyKey, wobbly ? "on" : "off")
+  }, [glassPanels, glassTint, glassLevel, wobbly])
 
   useEffect(() => {
     let mounted = true
@@ -343,6 +467,10 @@ function App() {
 
   // Open workspaces stay alive while navigating; they only suspend when the app closes.
   const navigateTo = async (target: NavId) => {
+    if (target === "settings") {
+      setSettingsOpen(true)
+      return true
+    }
     if (target === "folders" && activeItem === "folders") {
       setGridSignal((current) => current + 1)
     }
@@ -359,32 +487,66 @@ function App() {
   }
 
   const executeEntry = async (entry: PaletteEntry) => {
-    let outcome: Feedback = {
-      message: `${entry.label} opened`,
-      tone: "success",
-    }
-
     if (entry.target) {
       if (!(await navigateTo(entry.target))) {
         closePalette()
         return
       }
     }
-
-    if (entry.action === "copy-link") {
-      try {
-        await navigator.clipboard.writeText(window.location.href)
-        outcome.message = "Link copied"
-      } catch {
-        outcome = {
-          message: "Could not copy the link",
-          tone: "error",
-        }
-      }
-    }
-
     closePalette()
-    setFeedback(outcome)
+    setFeedback({ message: `${entry.label} opened`, tone: "success" })
+  }
+
+  // Recents power both the Home view and the palette's Spaces group.
+  const loadRecents = async () => {
+    try {
+      const projects = await projectService.list()
+      setRecentProjects(
+        projects
+          .filter((project) => !project.archived)
+          .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)),
+      )
+    } catch {
+      // The palette still shows actions and navigation without recents.
+    }
+  }
+
+  useEffect(() => {
+    if (paletteOpen || activeItem === "home") void loadRecents()
+  }, [paletteOpen, activeItem])
+
+  const openProject = (project: Project) => {
+    closePalette()
+    setActiveItem("folders")
+    requestOpenProject(project.id)
+  }
+
+  // Deterministic quick action: acts on the visible workspace, or opens the
+  // most recent space with the action queued. Never a dead end.
+  const runQuickAction = async (action: WorkspaceQuickAction) => {
+    closePalette()
+    setActiveItem("folders")
+    // Wait two frames so the library (and its workspace) become visible first.
+    await new Promise((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)),
+    )
+    if (requestWorkspaceAction(action)) return
+    let recent = recentProjects[0]
+    if (!recent) {
+      await loadRecents()
+      recent = (await projectService.list().catch(() => []))
+        .filter((project) => !project.archived)
+        .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0]
+    }
+    if (!recent) {
+      setFeedback({
+        message: "Create a space first from the library",
+        tone: "error",
+      })
+      return
+    }
+    queueQuickAction(action)
+    requestOpenProject(recent.id)
   }
 
   const renderEntry = (entry: PaletteEntry) => {
@@ -453,7 +615,8 @@ function App() {
           />
 
           {navigation.map(({ id, label, icon: Icon }) => {
-            const isActive = activeItem === id
+            const isActive =
+              id === "settings" ? settingsOpen : activeItem === id
 
             return (
               <Tooltip key={id}>
@@ -601,38 +764,70 @@ function App() {
                       We found no results for "{query}".
                     </CommandEmpty>
 
-                    {!isBrowsing && (
-                      <CommandGroup heading="Recent">
-                        {[folderEntries[0], resourceEntries[0]].map(renderEntry)}
+                    {(activeFilter === "all" || activeFilter === "actions") && (
+                      <CommandGroup heading="Do">
+                        {quickActions.map((entry) => (
+                          <CommandItem
+                            key={entry.id}
+                            value={`${entry.label} ${entry.description}`}
+                            keywords={entry.keywords}
+                            onSelect={() => void runQuickAction(entry.action)}
+                          >
+                            <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--surface-container)] text-[var(--on-surface-variant)]">
+                              <entry.icon strokeWidth={1.65} />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-medium">
+                                {entry.label}
+                              </span>
+                              <span className="block truncate text-xs text-[var(--on-surface-variant)]">
+                                {entry.description}
+                              </span>
+                            </span>
+                          </CommandItem>
+                        ))}
                       </CommandGroup>
                     )}
-
-                    {!isBrowsing && <CommandSeparator />}
 
                     {(activeFilter === "all" || activeFilter === "folders") &&
-                      isBrowsing && (
-                        <CommandGroup heading="Folders">
-                          {folderEntries.map(renderEntry)}
+                      recentProjects.length > 0 && (
+                        <CommandGroup heading="Spaces">
+                          {recentProjects.slice(0, 8).map((project) => (
+                            <CommandItem
+                              key={project.id}
+                              value={`${project.name} space project`}
+                              keywords={[project.name, "space", "espacio", "open", "abrir"]}
+                              onSelect={() => openProject(project)}
+                            >
+                              <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--primary-container)] text-[0.62rem] font-semibold text-[var(--on-primary-container)]">
+                                {project.name.slice(0, 2).toUpperCase()}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate font-medium">
+                                  {project.name}
+                                </span>
+                                <span className="block truncate text-xs text-[var(--on-surface-variant)]">
+                                  Open this space
+                                </span>
+                              </span>
+                            </CommandItem>
+                          ))}
                         </CommandGroup>
                       )}
 
-                    {(activeFilter === "all" || activeFilter === "resources") &&
-                      isBrowsing && (
-                        <CommandGroup heading="Resources">
-                          {resourceEntries.map(renderEntry)}
-                        </CommandGroup>
-                      )}
-
-                    {activeFilter === "all" && (
-                      <CommandGroup heading="Navigation">
-                        {navigationEntries.map(renderEntry)}
+                    {(activeFilter === "all" || activeFilter === "folders") && (
+                      <CommandGroup heading="Library">
+                        {folderEntries.map(renderEntry)}
                       </CommandGroup>
                     )}
 
-                    {(activeFilter === "all" || activeFilter === "actions") && (
-                      <CommandGroup heading="Quick actions">
-                        {actionEntries.map(renderEntry)}
-                      </CommandGroup>
+                    {activeFilter === "all" && (
+                      <>
+                        <CommandSeparator />
+                        <CommandGroup heading="Navigation">
+                          {navigationEntries.map(renderEntry)}
+                        </CommandGroup>
+                      </>
                     )}
                   </CommandList>
 
@@ -648,6 +843,59 @@ function App() {
           </section>
         )}
 
+        {activeItem === "home" && (
+          <section
+            aria-label="Home"
+            className="view-enter absolute inset-x-0 bottom-0 top-[54%] z-10 overflow-y-auto px-4 pb-24 lg:pb-10"
+          >
+            <div className="mx-auto w-full max-w-[32rem]">
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {quickActions.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    onClick={() => void runQuickAction(entry.action)}
+                    className="flex h-9 items-center gap-2 rounded-full border border-[var(--outline-variant)] bg-[var(--surface-container-high)] px-4 text-xs font-medium text-[var(--on-surface)] shadow-[0_1px_3px_var(--shadow-soft)] outline-none transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:bg-[var(--surface-container)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-[0.97]"
+                  >
+                    <entry.icon className="size-3.5 text-[var(--primary)]" strokeWidth={1.7} />
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+
+              {recentProjects.length > 0 && (
+                <div className="mt-8">
+                  <h2 className="px-1 text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-[var(--on-surface-variant)]">
+                    Recent
+                  </h2>
+                  <div className="mt-2 space-y-1">
+                    {recentProjects.slice(0, 6).map((project) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        onClick={() => openProject(project)}
+                        className="flex w-full items-center gap-3 rounded-2xl border border-transparent px-3 py-2.5 text-left outline-none transition-colors hover:border-[var(--outline-variant)] hover:bg-[var(--surface-container)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                      >
+                        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--primary-container)] text-[0.68rem] font-semibold text-[var(--on-primary-container)]">
+                          {project.name.slice(0, 2).toUpperCase()}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium">
+                            {project.name}
+                          </span>
+                          <span className="block truncate text-xs text-[var(--on-surface-variant)]">
+                            {formatRecentDate(project.updatedAt)}
+                          </span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         <div className={cn(activeItem !== "folders" && "hidden")}>
           <ProjectLibrary
             initialProjectId={workspaceTarget?.projectId}
@@ -655,7 +903,7 @@ function App() {
             initialServerId={workspaceTarget?.serverId}
             onInitialWorkspaceConsumed={() => setWorkspaceTarget(null)}
             showGridSignal={gridSignal}
-            onOpenSettings={() => setActiveItem("settings")}
+            onOpenSettings={() => setSettingsOpen(true)}
             onOpenCommandMenu={() => {
               setQuery("")
               setActiveFilter("all")
@@ -668,14 +916,35 @@ function App() {
 
         {activeItem === "resources" && <ResourcesPanel />}
 
-        {activeItem === "settings" && (
+        {settingsOpen && (
           <SettingsPanel
             isDark={isDark}
             accent={accent}
+            startView={startView}
             onModeChange={(dark) => changeAppearance(dark, accent)}
             onAccentChange={(nextAccent) =>
               changeAppearance(isDark, nextAccent)
             }
+            onStartViewChange={(next) => {
+              setStartView(next)
+              localStorage.setItem(startViewKey, next)
+              setFeedback({ message: "Start view saved", tone: "success" })
+            }}
+            glassPanels={glassPanels}
+            onGlassToggle={(panel) =>
+              setGlassPanels((current) =>
+                current.includes(panel)
+                  ? current.filter((item) => item !== panel)
+                  : [...current, panel],
+              )
+            }
+            glassTint={glassTint}
+            onGlassTintChange={setGlassTint}
+            glassLevel={glassLevel}
+            onGlassLevelChange={setGlassLevel}
+            wobbly={wobbly}
+            onWobblyChange={setWobbly}
+            onClose={() => setSettingsOpen(false)}
           />
         )}
 

@@ -255,6 +255,9 @@ func (bridge *AgentBridge) callTool(ctx context.Context, token, tool string, arg
 		if strings.HasPrefix(tool, "seizen_server_") {
 			return bridge.callServerTool(ctx, token, scope, tool, arguments)
 		}
+		if strings.HasPrefix(tool, "seizen_desk_") || strings.HasPrefix(tool, "seizen_files_") {
+			return bridge.callDeskTool(ctx, scope, tool, arguments)
+		}
 		return nil, errors.New("unrecognized agent tool")
 	}
 }

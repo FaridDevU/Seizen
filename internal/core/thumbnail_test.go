@@ -96,6 +96,37 @@ func TestProjectThumbnailSkipsInvalidImages(t *testing.T) {
 	})
 }
 
+func TestSetProjectThumbnailRoundTrip(t *testing.T) {
+	app, _, project, root := thumbnailTestProject(t)
+
+	source := image.NewRGBA(image.Rect(0, 0, 320, 200))
+	draw.Draw(source, source.Bounds(), &image.Uniform{C: color.RGBA{B: 255, A: 255}}, image.Point{}, draw.Src)
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, source); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(buffer.Bytes())
+
+	if err := app.SetProjectThumbnail(project.ID, dataURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".seizen", "thumbnail.png")); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := app.GetProjectThumbnail(project.ID, project.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDominantColor(t, decodeThumbnailDataURL(t, stored, "image/png", "png"), "blue")
+
+	if err := app.SetProjectThumbnail(project.ID, "data:image/jpeg;base64,abcd"); err == nil {
+		t.Fatal("expected a non-PNG data URL to be rejected")
+	}
+	if err := app.SetProjectThumbnail("missing", dataURL); err == nil {
+		t.Fatal("expected an unknown project to be rejected")
+	}
+}
+
 func TestProjectThumbnailRejectsOversizeSymlinkAndMismatch(t *testing.T) {
 	t.Run("oversize", func(t *testing.T) {
 		app, _, project, root := thumbnailTestProject(t)

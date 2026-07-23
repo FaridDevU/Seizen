@@ -303,6 +303,53 @@ input[type="number"]::-webkit-inner-spin-button {
   --wails-draggable: no-drag;
 }
 
+/* Terminal chrome color lives here (not on xterm) so glass mode can override it. */
+.terminal-surface {
+  background-color: #111513;
+}
+
+:root {
+  --glass-tint: #000000;
+  --glass-opacity: 50%;
+  --glass-blur: 10px;
+}
+
+/* xterm.css paints the scroll viewport #000; the surface owns the color instead. */
+.terminal-surface .xterm .xterm-viewport {
+  background-color: transparent;
+}
+
+[data-glass~="terminal"] [data-panel-type="terminal"],
+[data-glass~="editor"] [data-panel-type="editor"],
+[data-glass~="browser"] [data-panel-type="browser"],
+[data-glass~="notes"] [data-panel-type="note"],
+[data-glass~="notes"] [data-panel-type="todo"],
+[data-glass~="notes"] [data-panel-type="document"] {
+  background-color: color-mix(
+    in srgb,
+    var(--glass-tint) var(--glass-opacity),
+    transparent
+  );
+  backdrop-filter: blur(var(--glass-blur));
+}
+
+/* The panel's own glass paints the terminal; a second coat here would double the tint. */
+[data-glass~="terminal"] [data-panel-type="terminal"] .terminal-surface {
+  background-color: transparent;
+}
+
+/* Inner panel bodies painted with the surface token follow their panel's glass. */
+[data-glass~="editor"] [data-panel-type="editor"] .bg-\[var\(--surface\)\],
+[data-glass~="browser"] [data-panel-type="browser"] .bg-\[var\(--surface\)\],
+[data-glass~="notes"] [data-panel-type="todo"] .bg-\[var\(--surface\)\],
+[data-glass~="notes"] [data-panel-type="document"] .bg-\[var\(--surface\)\] {
+  background-color: color-mix(
+    in srgb,
+    var(--glass-tint) var(--glass-opacity),
+    transparent
+  );
+}
+
 .nav-indicator {
   transform: translateX(calc(var(--active-index) * 3rem));
   transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -363,6 +410,12 @@ input[type="number"]::-webkit-inner-spin-button {
 
 .panel-in {
   animation: panel-pop-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* With wobbly windows on, the spring warp supplies the pop — the CSS
+   animation only fades opacity so it can't fight the inline matrix3d. */
+:root[data-wobbly="on"] .wobble-pop {
+  animation-name: overlay-fade-in;
 }
 
 .overlay-in {
@@ -540,4 +593,60 @@ input[type="number"]::-webkit-inner-spin-button {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* Workspace document viewer (DOCX converted by mammoth) */
+.document-prose h1,
+.document-prose h2,
+.document-prose h3 {
+  margin: 1em 0 0.4em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.document-prose h1 { font-size: 1.35rem; }
+.document-prose h2 { font-size: 1.15rem; }
+.document-prose h3 { font-size: 1rem; }
+.document-prose p { margin: 0.45em 0; }
+.document-prose ul,
+.document-prose ol {
+  margin: 0.45em 0;
+  padding-left: 1.4em;
+}
+.document-prose ul { list-style: disc; }
+.document-prose ol { list-style: decimal; }
+.document-prose table {
+  margin: 0.7em 0;
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+.document-prose td,
+.document-prose th {
+  border: 1px solid var(--outline-variant);
+  padding: 0.3em 0.55em;
+}
+.document-prose img { max-width: 100%; height: auto; }
+.document-prose a { color: var(--primary); text-decoration: underline; }
+
+/* Sticky note markdown preview */
+.note-preview h1,
+.note-preview h2,
+.note-preview h3 {
+  margin: 0.5em 0 0.2em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.note-preview h1 { font-size: 1.15rem; }
+.note-preview h2 { font-size: 1.02rem; }
+.note-preview h3 { font-size: 0.92rem; }
+.note-preview code {
+  border-radius: 0.3rem;
+  background: var(--surface-container);
+  padding: 0.05em 0.35em;
+  font-size: 0.85em;
+}
+.note-preview .note-bullet,
+.note-preview .note-task { margin: 0.1em 0; }
+.note-preview .note-task-done {
+  color: var(--on-surface-variant);
+  text-decoration: line-through;
 }

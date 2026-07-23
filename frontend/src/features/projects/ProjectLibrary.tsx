@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
+import { toPng } from "html-to-image"
 import {
   Archive,
   Check,
@@ -26,6 +27,7 @@ import {
   RotateCcw,
   Search,
   Server,
+  ShieldCheck,
   Square,
   Star,
   Trash2,
@@ -38,11 +40,13 @@ import { confirmDialog } from "@/components/ui/confirm"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { suspendWorkspace } from "./workspace-lifecycle"
+import { openProjectEvent } from "./workspace-actions"
 
 import {
   projectService,
   type DuplicateGroup,
   type GlobalServer,
+  type ImportProgress,
   type Project,
   type ProjectFilter,
 } from "./project-service"
@@ -76,6 +80,37 @@ const sourceLabels: Record<Project["source"], string> = {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function editedAgo(iso: string) {
+  const then = new Date(iso).getTime()
+  if (!Number.isFinite(then)) return ""
+  const minutes = Math.round((Date.now() - then) / 60_000)
+  const units: [number, string][] = [
+    [60 * 24 * 365, "year"],
+    [60 * 24 * 30, "month"],
+    [60 * 24, "day"],
+    [60, "hour"],
+    [1, "minute"],
+  ]
+  for (const [size, name] of units) {
+    if (minutes >= size) {
+      const count = Math.floor(minutes / size)
+      return `Edited ${count} ${name}${count === 1 ? "" : "s"} ago`
+    }
+  }
+  return "Edited just now"
+}
+
+function pathBaseName(path: string) {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
 }
 
 function isGitHubRemote(value: string | null | undefined) {
@@ -127,6 +162,8 @@ type WorkspaceTarget = {
   initialServerId?: string
 }
 
+const deskSeededKey = "seizen-desk-seeded"
+
 // ponytail: fixed cap on mounted workspaces; configurable only if someone asks for it
 const MAX_LIVE_WORKSPACES = 3
 
@@ -166,10 +203,32 @@ function ProjectLibrary({
   const [initError, setInitError] = useState<string | null>(null)
   const [initAttempt, setInitAttempt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
+  const importCanceledRef = useRef(false)
   const thumbnailCache = useRef(
     new Map<string, { version: string; thumbnail: string }>(),
   )
   const thumbnailGeneration = useRef(0)
+  const projectsRef = useRef<Project[]>([])
+  projectsRef.current = projects
+  const workspaceElsRef = useRef(new Map<string, HTMLElement>())
+
+  // The library card shows the workspace exactly as it looked on exit: the
+  // visible workspace DOM is rasterized and stored as .seizen/thumbnail.png.
+  async function captureWorkspaceThumbnail(project: Project) {
+    const element = workspaceElsRef.current.get(project.id)
+    if (!element || element.clientWidth === 0) return
+    try {
+      const dataURL = await toPng(element, {
+        pixelRatio: Math.min(1, 960 / element.clientWidth),
+        skipFonts: true,
+      })
+      await projectService.setProjectThumbnail(project, dataURL)
+      thumbnailCache.current.delete(project.id)
+    } catch {
+      // A missed capture keeps the previous thumbnail.
+    }
+  }
 
   function openWorkspace(target: WorkspaceTarget) {
     setOpenWorkspaces((current) => {
@@ -189,6 +248,24 @@ function ProjectLibrary({
       ...current.filter((id) => id !== projectId),
     ])
   }
+
+  // The palette and Home ask for projects by id without touching library internals.
+  useEffect(() => {
+    const onOpenProject = (event: Event) => {
+      const detail = (event as CustomEvent).detail as unknown
+      const projectId =
+        typeof detail === "object" && detail !== null
+          ? (detail as { projectId?: unknown }).projectId
+          : undefined
+      if (typeof projectId !== "string") return
+      const project = projectsRef.current.find(
+        (candidate) => candidate.id === projectId,
+      )
+      if (project) openWorkspace({ project })
+    }
+    window.addEventListener(openProjectEvent, onOpenProject)
+    return () => window.removeEventListener(openProjectEvent, onOpenProject)
+  }, [])
 
   // Workspaces that exceed the cap are suspended first and only unmounted
   // afterward; unmounting first would leave orphaned processes without suspending them.
@@ -309,6 +386,24 @@ function ProjectLibrary({
         const root = await projectService.getProjectRoot()
         if (!active) return
         setProjectRoot(root)
+        // First run with an empty library: seed a default desk so nobody has to
+        // create or name a project before opening their first document.
+        if (!localStorage.getItem(deskSeededKey)) {
+          try {
+            const existing = await projectService.list()
+            if (!active) return
+            if (existing.length === 0) {
+              const desk = await projectService.createProject("My desk")
+              localStorage.setItem(deskSeededKey, "1")
+              if (active && desk) openWorkspace({ project: desk })
+            } else {
+              localStorage.setItem(deskSeededKey, "1")
+            }
+          } catch {
+            // Seeding is a convenience; the empty library still works without it.
+          }
+        }
+        if (!active) return
         await refresh()
         if (active) setReady(true)
       } catch (error) {
@@ -422,30 +517,54 @@ function ProjectLibrary({
     }
   }
 
-  const chooseProjectRoot = () =>
-    void run("project-root", async () => {
-      const path = await projectService.chooseDirectory(
-        "Choose projects folder",
-      )
-      if (!path) return
-      const root = await projectService.setProjectRoot(path)
-      setProjectRoot(root)
-      setNotice({ tone: "success", message: "Projects folder updated" })
-    })
-
   const importProjects = () =>
     void run("import", async () => {
       const path = await projectService.chooseDirectory("Import project")
       if (!path) return
-      const imported = await projectService.importFolders([path])
-      await refresh()
-      setNotice({
-        tone: "success",
-        message: `${imported.length} ${
-          imported.length === 1 ? "project imported" : "projects imported"
-        }`,
-      })
+      // A verbatim copy of a big project (node_modules, .git) can be large and slow —
+      // confirm first so it isn't a surprise.
+      const estimate = await projectService.estimateImport(path)
+      if (
+        estimate.large &&
+        !(await confirmDialog({
+          title: "Large project",
+          message:
+            "This project is over 2 GB. It will be copied into Seizen's secure vault, which may take a while and use that much disk space. Continue?",
+          confirmLabel: "Import",
+        }))
+      ) {
+        return
+      }
+      importCanceledRef.current = false
+      // Show the banner (and its Cancel button) immediately, before the first progress event.
+      setImportProgress({ name: pathBaseName(path), files: 0, bytes: 0, done: false })
+      const stop = projectService.onImportProgress(setImportProgress)
+      try {
+        const imported = await projectService.importFolders([path])
+        await refresh()
+        setNotice({
+          tone: "success",
+          message: `${imported.length} ${
+            imported.length === 1 ? "project imported" : "projects imported"
+          }`,
+        })
+      } catch (error) {
+        if (importCanceledRef.current) {
+          setNotice({ tone: "success", message: "Import canceled" })
+        } else {
+          throw error
+        }
+      } finally {
+        stop()
+        setImportProgress(null)
+        importCanceledRef.current = false
+      }
     })
+
+  const cancelImport = () => {
+    importCanceledRef.current = true
+    void projectService.cancelImport()
+  }
 
   const submitModal = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -470,10 +589,9 @@ function ProjectLibrary({
         }
         const message = await projectService.backupProject(modal.project)
         setNotice({ tone: "success", message })
-      } else if (modal.project.source === "imported") {
-        await projectService.removeProjectFromLibrary(modal.project)
-        setNotice({ tone: "success", message: "Project removed from Seizen" })
       } else {
+        // The backend deletes the vault copy for managed projects and only unlinks a
+        // legacy external folder — safe to call for any project.
         await projectService.deleteProject(modal.project)
         setNotice({ tone: "success", message: "Project deleted" })
       }
@@ -563,9 +681,6 @@ function ProjectLibrary({
             Your folders, Git, and the local library are only available in
             the desktop application.
           </p>
-          <code className="mt-5 inline-flex rounded-lg bg-[var(--surface-container)] px-3 py-2 text-xs text-[var(--on-surface-variant)]">
-            wails dev
-          </code>
         </div>
       </section>
     )
@@ -844,10 +959,10 @@ function ProjectLibrary({
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-4">
               {libraryItems.map((item) =>
                 item.kind === "project" ? (
-                  <ProjectRow
+                  <ProjectCard
                     key={item.project.id}
                     project={item.project}
                     thumbnail={thumbnails[item.project.id] ?? ""}
@@ -863,7 +978,7 @@ function ProjectLibrary({
                 ) : (
                   <div
                     key={item.id}
-                    className="relative rounded-2xl border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_1px_3px_var(--shadow-soft)]"
+                    className="relative col-span-full rounded-2xl border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_1px_3px_var(--shadow-soft)]"
                   >
                     <div className="flex items-center gap-3 rounded-t-2xl bg-[var(--surface-container)] px-4 py-3">
                       <span className="flex size-8 items-center justify-center rounded-xl bg-[var(--primary-container)] text-[var(--on-primary-container)]">
@@ -961,7 +1076,7 @@ function ProjectLibrary({
                                 ? modal.project.source === "imported"
                                   ? "The project will leave the Seizen library. Your folder on disk won't be touched."
                                   : "The folder and all its contents will be permanently deleted. This action cannot be undone."
-                                : "Create a local folder or clone a GitHub repository."}
+                                : "Start with an empty space, or clone a GitHub repository."}
                       </p>
                     </DialogPrimitive.Description>
                   </div>
@@ -1019,7 +1134,7 @@ function ProjectLibrary({
                         )}
                       >
                         <Folder className="size-4" strokeWidth={1.7} />
-                        Local project
+                        Empty space
                       </button>
                       <button
                         type="button"
@@ -1072,41 +1187,19 @@ function ProjectLibrary({
 
                   {(modal.kind === "create" || modal.kind === "clone") && (
                     <div>
-                      <span className="text-xs font-medium">
-                        Projects folder
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={
-                          projectRoot
-                            ? `Change projects folder. Current location: ${projectRoot}`
-                            : "Choose projects folder"
-                        }
-                        disabled={busy !== null}
-                        onClick={chooseProjectRoot}
-                        className="mt-1.5 flex h-11 w-full min-w-0 items-center gap-2.5 rounded-xl border border-[var(--outline-variant)] bg-[var(--surface-container)] px-3 text-left text-xs outline-none transition-colors hover:bg-[var(--state-layer)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-60"
+                      <span className="text-xs font-medium">Location</span>
+                      <div
+                        className="mt-1.5 flex h-11 w-full min-w-0 items-center gap-2.5 rounded-xl border border-[var(--outline-variant)] bg-[var(--surface-container)] px-3 text-left text-xs"
+                        title={projectRoot}
                       >
-                        <Folder
+                        <ShieldCheck
                           className="size-4 shrink-0 text-[var(--primary)]"
                           strokeWidth={1.7}
                         />
-                        <span
-                          className={cn(
-                            "min-w-0 flex-1 truncate",
-                            !projectRoot && "text-[var(--on-surface-variant)]",
-                          )}
-                          title={projectRoot}
-                        >
-                          {projectRoot || "Choose a folder"}
+                        <span className="min-w-0 flex-1 truncate text-[var(--on-surface-variant)]">
+                          Stored securely in Seizen's vault
                         </span>
-                        {busy === "project-root" ? (
-                          <LoaderCircle className="size-3.5 shrink-0 animate-spin text-[var(--on-surface-variant)]" />
-                        ) : (
-                          <span className="shrink-0 text-[0.68rem] font-medium text-[var(--primary)]">
-                            Change
-                          </span>
-                        )}
-                      </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1177,7 +1270,33 @@ function ProjectLibrary({
         </DialogPrimitive.Root>
       )}
 
-      {notice && (
+      {importProgress && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-20 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2.5 rounded-full bg-[var(--tooltip)] px-4 py-2 text-xs font-medium text-[var(--tooltip-foreground)] shadow-[0_8px_24px_var(--shadow-elevated)] lg:bottom-8"
+        >
+          <LoaderCircle className="size-3.5 animate-spin text-[var(--primary)]" />
+          <span className="max-w-[min(32rem,72vw)] truncate">
+            {importProgress.done
+              ? `Finishing ${importProgress.name}…`
+              : `Copying ${importProgress.name} to the vault — ${importProgress.files} ${
+                  importProgress.files === 1 ? "file" : "files"
+                }${importProgress.bytes ? ` (${formatBytes(importProgress.bytes)})` : ""}`}
+          </span>
+          {!importProgress.done && (
+            <button
+              type="button"
+              onClick={cancelImport}
+              className="ml-1 shrink-0 rounded-full px-2 py-0.5 text-[0.68rem] font-semibold underline-offset-2 hover:underline"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      )}
+
+      {notice && !importProgress && (
         <div
           key={`${notice.tone}-${notice.message}`}
           role={notice.tone === "error" ? "alert" : "status"}
@@ -1203,6 +1322,10 @@ function ProjectLibrary({
         .map((target) => (
         <div
           key={target.project.id}
+          ref={(element) => {
+            if (element) workspaceElsRef.current.set(target.project.id, element)
+            else workspaceElsRef.current.delete(target.project.id)
+          }}
           className={cn(
             "absolute inset-0",
             activeWorkspaceId !== target.project.id && "hidden",
@@ -1238,8 +1361,12 @@ function ProjectLibrary({
               },
             }}
             onBack={() => {
-              setActiveWorkspaceId(null)
-              void refresh()
+              // Capture while the workspace is still visible; a hidden
+              // element rasterizes to an empty image.
+              void captureWorkspaceThumbnail(target.project).finally(() => {
+                setActiveWorkspaceId(null)
+                void refresh()
+              })
             }}
             onDownload={() => projectService.exportProject(target.project)}
             onEdit={() => {
@@ -1264,9 +1391,11 @@ function ProjectLibrary({
 function ProjectThumbnail({
   source,
   loading,
+  card = false,
 }: {
   source: string
   loading: boolean
+  card?: boolean
 }) {
   const [failed, setFailed] = useState(false)
   const usableSource = source.startsWith("data:image/")
@@ -1276,7 +1405,14 @@ function ProjectThumbnail({
   }, [source])
 
   return (
-    <span className="relative flex h-12 w-[4.5rem] shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[var(--primary-container)] text-[var(--on-primary-container)] sm:h-14 sm:w-20">
+    <span
+      className={cn(
+        "flex items-center justify-center overflow-hidden bg-[var(--primary-container)] text-[var(--on-primary-container)]",
+        card
+          ? "absolute inset-0"
+          : "relative h-12 w-[4.5rem] shrink-0 rounded-xl sm:h-14 sm:w-20",
+      )}
+    >
       {usableSource && !failed ? (
         <img
           src={source}
@@ -1305,15 +1441,54 @@ function ProjectThumbnail({
               backgroundSize: "8px 8px",
             }}
           />
-          <span className="absolute left-2 top-2 h-8 w-11 overflow-hidden rounded-md border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_2px_7px_var(--shadow-soft)]">
-            <span className="flex h-2 items-center gap-0.5 border-b border-[var(--outline-variant)] px-1">
-              <span className="size-1 rounded-full bg-[var(--primary)]" />
-              <span className="size-1 rounded-full bg-[var(--outline-variant)]" />
+          <span
+            className={cn(
+              "absolute overflow-hidden rounded-md border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_2px_7px_var(--shadow-soft)]",
+              card ? "left-4 top-4 h-16 w-[6.5rem]" : "left-2 top-2 h-8 w-11",
+            )}
+          >
+            <span
+              className={cn(
+                "flex items-center gap-0.5 border-b border-[var(--outline-variant)] px-1",
+                card ? "h-3.5 gap-1 px-1.5" : "h-2",
+              )}
+            >
+              <span
+                className={cn(
+                  "rounded-full bg-[var(--primary)]",
+                  card ? "size-1.5" : "size-1",
+                )}
+              />
+              <span
+                className={cn(
+                  "rounded-full bg-[var(--outline-variant)]",
+                  card ? "size-1.5" : "size-1",
+                )}
+              />
             </span>
-            <span className="mx-1.5 mt-1.5 block h-1 w-6 rounded-full bg-[var(--primary-container)]" />
-            <span className="mx-1.5 mt-1 block h-1 w-4 rounded-full bg-[var(--outline-variant)]" />
+            <span
+              className={cn(
+                "block rounded-full bg-[var(--primary-container)]",
+                card
+                  ? "mx-2.5 mt-2.5 h-1.5 w-12"
+                  : "mx-1.5 mt-1.5 h-1 w-6",
+              )}
+            />
+            <span
+              className={cn(
+                "block rounded-full bg-[var(--outline-variant)]",
+                card ? "mx-2.5 mt-1.5 h-1.5 w-8" : "mx-1.5 mt-1 h-1 w-4",
+              )}
+            />
           </span>
-          <span className="absolute bottom-1.5 right-1.5 flex h-6 w-9 items-center rounded-md border border-[var(--outline-variant)] bg-[var(--tooltip)] px-1.5 font-mono text-[0.48rem] font-semibold text-[var(--tooltip-foreground)] shadow-[0_3px_9px_var(--shadow-soft)]">
+          <span
+            className={cn(
+              "absolute flex items-center rounded-md border border-[var(--outline-variant)] bg-[var(--tooltip)] font-mono font-semibold text-[var(--tooltip-foreground)] shadow-[0_3px_9px_var(--shadow-soft)]",
+              card
+                ? "bottom-3 right-3 h-9 w-14 px-2.5 text-[0.62rem]"
+                : "bottom-1.5 right-1.5 h-6 w-9 px-1.5 text-[0.48rem]",
+            )}
+          >
             &gt;_
           </span>
         </span>
@@ -1324,6 +1499,120 @@ function ProjectThumbnail({
         </span>
       )}
     </span>
+  )
+}
+
+function ProjectCard({
+  project,
+  thumbnail,
+  busy,
+  onOpen,
+  onFavorite,
+  onRename,
+  onGitHub,
+  onBackup,
+  onArchive,
+  onDelete,
+}: {
+  project: Project
+  thumbnail: string
+  busy: string | null
+  onOpen: () => void
+  onFavorite: () => void
+  onRename: () => void
+  onGitHub: () => void
+  onBackup: () => void
+  onArchive: () => void
+  onDelete: () => void
+}) {
+  const hasGitHub = isGitHubRemote(project.gitRemote)
+
+  return (
+    <article className="group relative flex min-w-0 flex-col rounded-2xl border border-[var(--outline-variant)] bg-[var(--surface-container-high)] shadow-[0_1px_3px_var(--shadow-soft)] transition-[border-color,box-shadow] hover:border-[var(--focus-border)] hover:shadow-[0_10px_28px_var(--shadow-soft)]">
+      <button
+        type="button"
+        aria-label={`Open workspace for ${project.name}`}
+        disabled={busy !== null}
+        onClick={onOpen}
+        className="relative block aspect-[16/10] w-full overflow-hidden rounded-t-2xl outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--ring)] disabled:opacity-60"
+      >
+        <ProjectThumbnail
+          card
+          source={thumbnail}
+          loading={busy === `open-${project.id}`}
+        />
+        {project.missing && (
+          <span
+            className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-md bg-[var(--warning)]/15 px-1.5 py-0.5 text-[0.62rem] font-medium text-[var(--warning)] backdrop-blur-sm"
+            title={`Folder not found: ${project.path}`}
+          >
+            <CircleAlert className="size-3" strokeWidth={2} />
+            Missing
+          </span>
+        )}
+      </button>
+
+      <div className="flex items-center gap-2.5 border-t border-[var(--outline-variant)] px-3 py-2.5">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-container)] text-[var(--on-primary-container)]">
+          {project.source === "git" || hasGitHub ? (
+            <FolderGit2 className="size-3.5" strokeWidth={1.7} />
+          ) : (
+            <Folder className="size-3.5" strokeWidth={1.7} />
+          )}
+        </span>
+        <button
+          type="button"
+          disabled={busy !== null}
+          onClick={onOpen}
+          title={project.path}
+          className="min-w-0 flex-1 text-left outline-none disabled:opacity-60"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs font-semibold tracking-[-0.015em]">
+              {project.name}
+            </span>
+            {project.variantLabel && (
+              <span className="shrink-0 rounded-md bg-[var(--surface-container)] px-1.5 py-0.5 text-[0.6rem] font-medium text-[var(--on-surface-variant)]">
+                {project.variantLabel}
+              </span>
+            )}
+          </span>
+          <span className="mt-0.5 block truncate text-[0.65rem] text-[var(--on-surface-variant)]">
+            {sourceLabels[project.source]} · {editedAgo(project.updatedAt)}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center">
+          <IconAction
+            label={
+              project.favorite ? "Remove from favorites" : "Mark as favorite"
+            }
+            active={project.favorite}
+            disabled={busy !== null}
+            onClick={onFavorite}
+            className={cn(
+              "size-7",
+              !project.favorite &&
+                "opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100",
+            )}
+          >
+            <Star
+              className="size-3.5"
+              fill={project.favorite ? "currentColor" : "none"}
+              strokeWidth={1.7}
+            />
+          </IconAction>
+          <ProjectActions
+            project={project}
+            busy={busy}
+            onRename={onRename}
+            onGitHub={onGitHub}
+            onBackup={onBackup}
+            onArchive={onArchive}
+            onDelete={onDelete}
+          />
+        </div>
+      </div>
+    </article>
   )
 }
 
@@ -1388,6 +1677,15 @@ function ProjectRow({
           {project.variantLabel && (
             <span className="hidden shrink-0 rounded-md bg-[var(--surface-container)] px-1.5 py-0.5 text-[0.62rem] font-medium text-[var(--on-surface-variant)] sm:inline">
               {project.variantLabel}
+            </span>
+          )}
+          {project.missing && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--warning)]/15 px-1.5 py-0.5 text-[0.62rem] font-medium text-[var(--warning)]"
+              title={`Folder not found: ${project.path}`}
+            >
+              <CircleAlert className="size-3" strokeWidth={2} />
+              Missing
             </span>
           )}
         </span>

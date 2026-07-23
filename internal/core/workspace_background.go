@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +26,11 @@ var workspaceBackgroundFormats = map[string]string{
 	".jpeg": "jpeg",
 }
 
+var workspaceBackgroundVideoExtensions = map[string]bool{
+	".mp4":  true,
+	".webm": true,
+}
+
 // ChooseProjectWorkspaceBackground selects and stores a local background for one project.
 // An empty result means the native picker was cancelled.
 func (a *App) ChooseProjectWorkspaceBackground(projectID, path string) (string, error) {
@@ -33,7 +40,9 @@ func (a *App) ChooseProjectWorkspaceBackground(projectID, path string) (string, 
 	selected, err := wailsruntime.OpenFileDialog(a.context(), wailsruntime.OpenDialogOptions{
 		Title: "Choose workspace background",
 		Filters: []wailsruntime.FileFilter{
+			{DisplayName: "Images and videos", Pattern: "*.png;*.jpg;*.jpeg;*.mp4;*.webm"},
 			{DisplayName: "PNG or JPEG images", Pattern: "*.png;*.jpg;*.jpeg"},
+			{DisplayName: "MP4 or WebM videos", Pattern: "*.mp4;*.webm"},
 		},
 	})
 	if err != nil {
@@ -53,10 +62,17 @@ func (a *App) GetProjectWorkspaceBackground(projectID, path string) (string, err
 	if err != nil {
 		return "", err
 	}
-	data, format, err := readWorkspaceBackground(target, false)
+	mimeType, info, err := sniffWorkspaceBackground(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
+	if err != nil {
+		return "", fmt.Errorf("the saved background is not valid: %w", err)
+	}
+	if strings.HasPrefix(mimeType, "video/") {
+		return workspaceBackgroundVideoURL(projectID, info), nil
+	}
+	data, format, err := readWorkspaceBackground(target, false)
 	if err != nil {
 		return "", fmt.Errorf("the saved background is not valid: %w", err)
 	}
@@ -79,18 +95,90 @@ func (a *App) setProjectWorkspaceBackground(projectID, path, source string) (str
 }
 
 func (a *App) storeProjectWorkspaceBackground(projectID, source string) (string, error) {
-	data, format, err := readWorkspaceBackground(source, true)
-	if err != nil {
-		return "", fmt.Errorf("the chosen image is not valid: %w", err)
-	}
 	target, err := a.workspaceBackgroundPath(projectID)
 	if err != nil {
 		return "", err
+	}
+	if workspaceBackgroundVideoExtensions[strings.ToLower(filepath.Ext(source))] {
+		return a.storeProjectWorkspaceBackgroundVideo(projectID, source, target)
+	}
+	data, format, err := readWorkspaceBackground(source, true)
+	if err != nil {
+		return "", fmt.Errorf("the chosen image is not valid: %w", err)
 	}
 	if err = writeManagedWorkspaceImage(target, data); err != nil {
 		return "", fmt.Errorf("could not save the background: %w", err)
 	}
 	return workspaceBackgroundDataURL(data, format), nil
+}
+
+// storeProjectWorkspaceBackgroundVideo streams the video into the managed folder
+// instead of loading it into memory; the frontend plays it from the asset server.
+func (a *App) storeProjectWorkspaceBackgroundVideo(projectID, source, target string) (string, error) {
+	absolute, err := filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("the path is not valid: %w", err)
+	}
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return "", fmt.Errorf("could not open the video: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", errors.New("the video must be a regular file, not a link")
+	}
+	if info.Size() <= 0 || info.Size() > maxWorkspaceAssetSize {
+		return "", errors.New("the video must be at most 512 MiB")
+	}
+	file, err := os.Open(absolute)
+	if err != nil {
+		return "", fmt.Errorf("could not read the video: %w", err)
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return "", errors.New("the video changed while it was being opened")
+	}
+	header := make([]byte, 512)
+	headerLength, err := io.ReadFull(file, header)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("could not read the video: %w", err)
+	}
+	header = header[:headerLength]
+	if !strings.HasPrefix(http.DetectContentType(header), "video/") {
+		return "", errors.New("the content does not match a valid MP4 or WebM video")
+	}
+	if err = writeManagedWorkspaceAsset(target, header, file, openedInfo.Size()); err != nil {
+		return "", fmt.Errorf("could not save the background: %w", err)
+	}
+	written, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("could not save the background: %w", err)
+	}
+	return workspaceBackgroundVideoURL(projectID, written), nil
+}
+
+func sniffWorkspaceBackground(target string) (string, os.FileInfo, error) {
+	file, err := os.Open(target)
+	if err != nil {
+		return "", nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", nil, err
+	}
+	header := make([]byte, 512)
+	headerLength, err := io.ReadFull(file, header)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return "", nil, err
+	}
+	return http.DetectContentType(header[:headerLength]), info, nil
+}
+
+// workspaceBackgroundVideoURL cache-busts with the file's mtime so a replaced
+// video is refetched even though the URL path never changes.
+func workspaceBackgroundVideoURL(projectID string, info os.FileInfo) string {
+	return fmt.Sprintf("%s%s?t=%d", workspaceBackgroundURLPrefix, url.PathEscape(projectID), info.ModTime().UnixNano())
 }
 
 func writeManagedWorkspaceImage(target string, data []byte) error {
@@ -184,7 +272,7 @@ func readWorkspaceBackground(path string, checkExtension bool) ([]byte, string, 
 		var ok bool
 		expectedFormat, ok = workspaceBackgroundFormats[strings.ToLower(filepath.Ext(path))]
 		if !ok {
-			return nil, "", errors.New("only PNG or JPEG images are supported")
+			return nil, "", errors.New("only PNG, JPEG, MP4 or WebM files are supported")
 		}
 	}
 	absolute, err := filepath.Abs(path)

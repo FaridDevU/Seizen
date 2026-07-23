@@ -19,8 +19,10 @@ const (
 	maxThumbnailSize      = 3 * 1024 * 1024
 	maxThumbnailDimension = 8192
 	maxThumbnailPixels    = 24_000_000
-	thumbnailWidth        = 160
-	thumbnailHeight       = 112
+	thumbnailWidth        = 480
+	thumbnailHeight       = 300
+	// Workspace captures arrive as base64 PNG data URLs from the frontend.
+	maxIncomingThumbnail = 12 * 1024 * 1024
 )
 
 var (
@@ -67,6 +69,61 @@ func (a *App) GetProjectThumbnail(id, path string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// SetProjectThumbnail stores a workspace capture as .seizen/thumbnail.png,
+// which GetProjectThumbnail already prefers over anything else in the project.
+func (a *App) SetProjectThumbnail(id, dataURL string) error {
+	ctx := a.context()
+	db, err := a.database.Pool(ctx)
+	if err != nil {
+		return err
+	}
+	var storedPath string
+	err = db.QueryRowContext(ctx, `SELECT path FROM projects WHERE id = ?`, id).Scan(&storedPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("the project was not found")
+	}
+	if err != nil {
+		return err
+	}
+	root, ok := safeThumbnailRoot(storedPath)
+	if !ok {
+		return errors.New("the project folder is not available")
+	}
+
+	const prefix = "data:image/png;base64,"
+	if len(dataURL) > maxIncomingThumbnail || !strings.HasPrefix(dataURL, prefix) {
+		return errors.New("the thumbnail must be a PNG data URL")
+	}
+	raw, err := base64.StdEncoding.DecodeString(dataURL[len(prefix):])
+	if err != nil {
+		return errors.New("the thumbnail could not be decoded")
+	}
+	decoded, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return errors.New("the thumbnail is not a valid PNG")
+	}
+	bounds := decoded.Bounds()
+	if !validThumbnailDimensions(bounds.Dx(), bounds.Dy()) {
+		return errors.New("the thumbnail dimensions are not valid")
+	}
+
+	resized := resizeThumbnail(decoded, 960, 600)
+	var output bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.BestSpeed}).Encode(&output, resized); err != nil {
+		return err
+	}
+	directory := filepath.Join(root, ".seizen")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	target := filepath.Join(directory, "thumbnail.png")
+	temporary := target + ".tmp"
+	if err := os.WriteFile(temporary, output.Bytes(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(temporary, target)
 }
 
 func findThumbnailCandidates(root string) []thumbnailCandidate {

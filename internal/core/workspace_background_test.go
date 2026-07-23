@@ -43,6 +43,38 @@ func TestProjectWorkspaceBackgroundPersistsClearsAndStaysScoped(t *testing.T) {
 	}
 }
 
+func TestProjectWorkspaceBackgroundAcceptsVideo(t *testing.T) {
+	app, db, root := deletionTestApp(t)
+	project := deletionTestProject(t, db, filepath.Join(root, "Background"), ProjectCreated)
+	source := filepath.Join(t.TempDir(), "wallpaper.mp4")
+	// Minimal MP4 ftyp box so http.DetectContentType reports video/mp4.
+	if err := os.WriteFile(source, []byte{0, 0, 0, 12, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	written, err := app.setProjectWorkspaceBackground(project.ID, project.Path, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(written, workspaceBackgroundURLPrefix+project.ID+"?t=") {
+		t.Fatalf("expected a background video URL, got %q", written)
+	}
+	loaded, err := app.GetProjectWorkspaceBackground(project.ID, project.Path)
+	if err != nil || loaded != written {
+		t.Fatalf("expected the stored video URL, got %q, %v", loaded, err)
+	}
+
+	t.Run("renamed non-video rejected", func(t *testing.T) {
+		fake := filepath.Join(t.TempDir(), "fake.mp4")
+		if err := os.WriteFile(fake, []byte("not a video"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.setProjectWorkspaceBackground(project.ID, project.Path, fake); err == nil {
+			t.Fatal("expected a renamed non-video to be rejected")
+		}
+	})
+}
+
 func TestProjectWorkspaceBackgroundRejectsUnsafeFiles(t *testing.T) {
 	app, db, root := deletionTestApp(t)
 	project := deletionTestProject(t, db, filepath.Join(root, "Background"), ProjectCreated)

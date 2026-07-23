@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -39,7 +40,14 @@ func Run(assets embed.FS) {
 		MinWidth:         960,
 		MinHeight:        640,
 		BackgroundColour: options.NewRGB(247, 246, 243),
-		AssetServer:      &assetserver.Options{Assets: assets, Middleware: denyFraming},
+		AssetServer: &assetserver.Options{
+			Assets:     assets,
+			Middleware: app.assetMiddleware(),
+		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
+		},
 		OnStartup:        app.startup,
 		OnBeforeClose:    app.beforeClose,
 		OnShutdown:       app.shutdown,
@@ -60,10 +68,23 @@ func ensureWebviewData(databasePath string) (string, error) {
 	return path, os.MkdirAll(path, 0o700)
 }
 
-func denyFraming(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
-		response.Header().Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(response, request)
-	})
+// assetMiddleware serves managed workspace assets and denies framing. It must run
+// as middleware (not AssetServer.Handler) so /workspace-asset/ is intercepted before
+// the request reaches the frontend. In `wails dev` the frontend is a Vite server whose
+// SPA fallback answers every path with index.html, which would otherwise shadow the
+// Handler and make dropped documents load HTML instead of their bytes.
+func (a *App) assetMiddleware() assetserver.Middleware {
+	assets := a.workspaceAssetHandler()
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			response.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+			response.Header().Set("X-Frame-Options", "DENY")
+			if strings.HasPrefix(request.URL.Path, workspaceAssetURLPrefix) ||
+				strings.HasPrefix(request.URL.Path, workspaceBackgroundURLPrefix) {
+				assets.ServeHTTP(response, request)
+				return
+			}
+			next.ServeHTTP(response, request)
+		})
+	}
 }

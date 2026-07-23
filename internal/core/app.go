@@ -29,6 +29,7 @@ type App struct {
 	closePending         bool
 	closeAllowed         bool
 	closeAttempt         uint64
+	importCancel         context.CancelFunc
 	emitEvent            func(context.Context, string, ...interface{})
 	quit                 func(context.Context)
 }
@@ -46,6 +47,10 @@ func (a *App) startup(ctx context.Context) {
 	a.mu.Lock()
 	a.ctx = ctx
 	a.mu.Unlock()
+	// Off the UI path: re-assert the vault guards and clear any leftovers from a crashed
+	// import or delete. Per-project path health is reported by ListProjects (Project.Missing),
+	// which the library loads on open.
+	go a.healVault()
 }
 
 func (a *App) shutdown(context.Context) {
@@ -264,12 +269,21 @@ func (a *App) Initialize() error {
 	return nil
 }
 
+// GetProjectRoot reports the vault that now holds every project. It is no longer a
+// user-chosen location — that was what let a project's folder be moved or deleted out
+// from under the app.
 func (a *App) GetProjectRoot() (string, error) {
-	return a.database.ProjectRoot(a.context())
+	root, err := a.vaultRoot()
+	if err != nil {
+		return "", err
+	}
+	return displayPath(root), nil
 }
 
-func (a *App) SetProjectRoot(path string) (string, error) {
-	return a.database.SetProjectRoot(a.context(), path)
+// SetProjectRoot is kept for binding compatibility only. Projects always live in the
+// protected vault, so the location can't be changed; this returns the vault path.
+func (a *App) SetProjectRoot(string) (string, error) {
+	return a.GetProjectRoot()
 }
 
 func (a *App) GetAppearance() (Appearance, error) {

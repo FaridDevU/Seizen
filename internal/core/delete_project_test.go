@@ -41,17 +41,19 @@ func TestDeleteProject(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses outside root", func(t *testing.T) {
+	t.Run("unlinks a project outside the vault without deleting its folder", func(t *testing.T) {
 		app, db, root := deletionTestApp(t)
 		project := deletionTestProject(t, db, filepath.Join(filepath.Dir(root), "Outside"), ProjectCreated)
 
-		if err := app.DeleteProject(project.ID, project.Path); err == nil {
-			t.Fatal("expected an outside project to be refused")
+		// A folder outside the vault is only unlinked from the library; its files are
+		// never touched (the app never owns them).
+		if err := app.DeleteProject(project.ID, project.Path); err != nil {
+			t.Fatal(err)
 		}
 		if info, err := os.Stat(project.Path); err != nil || !info.IsDir() {
 			t.Fatalf("expected outside folder to remain: %v", err)
 		}
-		assertProjectCount(t, db, project.ID, 1)
+		assertProjectCount(t, db, project.ID, 0)
 	})
 
 	t.Run("refuses path mismatch", func(t *testing.T) {
@@ -104,14 +106,31 @@ func TestRemoveProjectFromLibrary(t *testing.T) {
 		assertProjectCount(t, db, project.ID, 0)
 	})
 
-	t.Run("DeleteProject still refuses imported projects", func(t *testing.T) {
+	t.Run("DeleteProject unlinks an external imported project but keeps its folder", func(t *testing.T) {
 		app, db, root := deletionTestApp(t)
 		project := deletionTestProject(t, db, filepath.Join(filepath.Dir(root), "Imported"), ProjectImported)
 
-		if err := app.DeleteProject(project.ID, project.Path); err == nil {
-			t.Fatal("expected an imported project to be refused")
+		if err := app.DeleteProject(project.ID, project.Path); err != nil {
+			t.Fatal(err)
 		}
-		assertProjectCount(t, db, project.ID, 1)
+		if info, err := os.Stat(project.Path); err != nil || !info.IsDir() {
+			t.Fatalf("expected the external folder to remain: %v", err)
+		}
+		assertProjectCount(t, db, project.ID, 0)
+	})
+
+	t.Run("DeleteProject removes an imported copy that lives in the vault", func(t *testing.T) {
+		app, db, root := deletionTestApp(t)
+		project := deletionTestProject(t, db, filepath.Join(root, "VaultImport"), ProjectImported)
+
+		// Vault copies are always safe to delete — the original was left untouched at import.
+		if err := app.DeleteProject(project.ID, project.Path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(project.Path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected the vault copy to be removed, got %v", err)
+		}
+		assertProjectCount(t, db, project.ID, 0)
 	})
 }
 
@@ -162,11 +181,12 @@ func deletionTestApp(t *testing.T) (*App, *sql.DB, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err = database.ProjectRoot(context.Background())
+	app := &App{database: database}
+	root, err = app.vaultRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &App{database: database}, db, root
+	return app, db, root
 }
 
 func deletionTestProject(t *testing.T, db *sql.DB, path string, source ProjectSource) Project {

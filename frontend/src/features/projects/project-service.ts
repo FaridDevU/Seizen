@@ -1,8 +1,10 @@
 import {
   BackupProject,
+  CancelImport,
   ChooseDirectory,
   CloneRepository,
   CreateProject,
+  EstimateImport,
   DeleteProject,
   DetectDuplicateGroups,
   ExportProject,
@@ -21,10 +23,12 @@ import {
   SetFavorite,
   SetProjectGitHub,
   SetProjectRoot,
+  SetProjectThumbnail,
   StopProjectTerminal,
   WriteProjectTerminal,
   WriteProjectTerminalBinary,
 } from "../../../wailsjs/go/core/App"
+import { EventsOn } from "../../../wailsjs/runtime/runtime"
 import type { TerminalShell } from "./workspace-model"
 
 export type ProjectSource = "created" | "imported" | "git"
@@ -160,6 +164,21 @@ export type Project = {
   groupId: string | null
   groupTitle: string | null
   variantLabel: string | null
+  // Computed on load: the project's folder is gone from disk.
+  missing: boolean
+}
+
+export type ImportProgress = {
+  name: string
+  files: number
+  bytes: number
+  done: boolean
+}
+
+export type ImportEstimate = {
+  bytes: number
+  files: number
+  large: boolean
 }
 
 export type ProjectCandidate = Pick<
@@ -170,6 +189,12 @@ export type ProjectCandidate = Pick<
 export type WorkspacePhotoAsset = {
   assetId: string
   dataURL: string
+}
+
+export type WorkspaceDocumentAsset = {
+  assetId: string
+  kind: string
+  name: string
 }
 
 export type DuplicateGroup = {
@@ -559,6 +584,10 @@ export const projectService = {
     return GetProjectRoot()
   },
 
+  setProjectThumbnail(project: Project, dataURL: string) {
+    return SetProjectThumbnail(project.id, dataURL)
+  },
+
   getProjectThumbnail(project: Project) {
     return GetProjectThumbnail(project.id, project.path)
   },
@@ -630,6 +659,32 @@ export const projectService = {
     )
   },
 
+  chooseProjectWorkspaceFile(project: Project) {
+    return callProjectBackend<WorkspaceDocumentAsset>(
+      "ChooseProjectWorkspaceFile",
+      project.id,
+      project.path,
+    )
+  },
+
+  importProjectWorkspaceAsset(project: Project, source: string) {
+    return callProjectBackend<WorkspaceDocumentAsset>(
+      "ImportProjectWorkspaceAsset",
+      project.id,
+      project.path,
+      source,
+    )
+  },
+
+  deleteProjectWorkspaceAsset(project: Project, assetId: string) {
+    return callProjectBackend<void>(
+      "DeleteProjectWorkspaceAsset",
+      project.id,
+      project.path,
+      assetId,
+    )
+  },
+
   setProjectRoot(path: string) {
     return SetProjectRoot(path)
   },
@@ -640,6 +695,22 @@ export const projectService = {
 
   importFolders(paths: string[]) {
     return ImportProjects(paths) as Promise<Project[]>
+  },
+
+  estimateImport(path: string) {
+    return EstimateImport(path) as Promise<ImportEstimate>
+  },
+
+  cancelImport() {
+    return CancelImport()
+  },
+
+  // onImportProgress reports copy progress while folders are copied into the vault.
+  // Returns an unsubscribe function.
+  onImportProgress(handler: (progress: ImportProgress) => void) {
+    return EventsOn("project.import.progress", (progress) =>
+      handler(progress as ImportProgress),
+    )
   },
 
   cloneRepository(url: string) {
@@ -672,6 +743,21 @@ export const projectService = {
       project.id,
       experimentId,
       shell,
+    )
+  },
+
+  startProjectTerminalInFolder(
+    project: Project,
+    shell: TerminalShell,
+    experimentId: string,
+    subfolder: string,
+  ) {
+    return callProjectBackend<string>(
+      "StartProjectTerminalInFolder",
+      project.id,
+      experimentId,
+      shell,
+      subfolder,
     )
   },
 

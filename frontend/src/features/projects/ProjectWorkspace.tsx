@@ -20,13 +20,17 @@ import {
   CircleHelp,
   Command as CommandIcon,
   Download,
+  FileText,
+  FolderOpen,
   Globe2,
   ImagePlus,
+  ListChecks,
   LoaderCircle,
   Maximize2,
   Menu,
   Minimize2,
   Music2,
+  Palette,
   Pause,
   Pencil,
   Play,
@@ -37,6 +41,7 @@ import {
   SkipBack,
   SkipForward,
   SquareTerminal,
+  StickyNote,
   Trash2,
   X,
   type LucideIcon,
@@ -58,6 +63,7 @@ import type { core } from "../../../wailsjs/go/models"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { confirmDialog, promptDialog } from "@/components/ui/confirm"
 import { WindowControls } from "@/components/WindowControls"
 import { BrandChip, brandGlyphs } from "@/components/ui/brand-icon"
 import {
@@ -78,19 +84,46 @@ import {
 } from "./workspace-lifecycle"
 import {
   clampZoom,
+  documentKinds,
+  findFreePosition,
   fitWorkspaceViewport,
+  maximumNoteCharacters,
+  snapDragPosition,
+  tidyGap,
+  tidyLayout,
+  maximumTodoItemCharacters,
+  maximumTodoItems,
+  noteColors,
+  maximumRegionLabel,
   normalizeBrowserURL,
   normalizeEditorURL,
   parseWorkspace,
+  regionContaining,
   serializeWorkspace,
+  workspaceAssetURL,
+  type StoredRegion,
+  type NoteColor,
   type StoredBrowserNode,
+  type StoredDocumentNode,
   type StoredEditorNode,
+  type StoredNoteNode,
   type StoredPhotoNode,
   type StoredPlayerNode,
   type StoredTerminalNode,
+  type StoredTodoNode,
   type TerminalShell,
+  type TodoItem,
   type WorkspaceViewport,
 } from "./workspace-model"
+import { DocumentPanel } from "./DocumentPanel"
+import { subscribeToFileDrops } from "./file-drop"
+import { notifyInBackground } from "./notifications"
+import {
+  isWorkspaceActionDetail,
+  takeQuickAction,
+  workspaceActionEvent,
+  type WorkspaceQuickAction,
+} from "./workspace-actions"
 import {
   RealTerminal,
   type RealTerminalHandle,
@@ -126,12 +159,18 @@ type EditorNode = StoredEditorNode & {
   status: EditorStatus
   error?: string
 }
+type NoteNode = StoredNoteNode
+type TodoNode = StoredTodoNode
+type DocumentNode = StoredDocumentNode
 type WorkspaceNode =
   | TerminalNode
   | BrowserNode
   | PlayerNode
   | PhotoNode
   | EditorNode
+  | NoteNode
+  | TodoNode
+  | DocumentNode
 type WorkspaceNotice = { tone: "success" | "error"; message: string }
 type PendingTerminal = {
   output: string
@@ -185,7 +224,13 @@ function PanelIcon({ node }: { node: WorkspaceNode }) {
         ? Globe2
         : node.type === "photo"
           ? ImagePlus
-          : Pencil
+          : node.type === "note"
+            ? StickyNote
+            : node.type === "todo"
+              ? ListChecks
+              : node.type === "document"
+                ? FileText
+                : Pencil
 
   return (
     <span
@@ -226,9 +271,45 @@ type Interaction =
       startHeight: number
       zoom: number
     }
+  | {
+      kind: "region-move"
+      pointerId: number
+      id: string
+      startClientX: number
+      startClientY: number
+      startX: number
+      startY: number
+      zoom: number
+      members: Array<{ id: string; startX: number; startY: number }>
+    }
+  | {
+      kind: "region-resize"
+      pointerId: number
+      id: string
+      startClientX: number
+      startClientY: number
+      startWidth: number
+      startHeight: number
+      zoom: number
+    }
 
 const minimumNodeWidth = 280
 const minimumNodeHeight = 190
+const maximumHistoryEntries = 100
+
+type GeometrySnapshot = Map<
+  string,
+  { x: number; y: number; z: number; width: number; height: number }
+>
+
+function snapshotGeometry(nodes: readonly WorkspaceNode[]): GeometrySnapshot {
+  return new Map(
+    nodes.map((node) => [
+      node.id,
+      { x: node.x, y: node.y, z: node.z, width: node.width, height: node.height },
+    ]),
+  )
+}
 // JavaScript stores strings as UTF-16, so this is roughly 256 KiB per panel.
 const maximumTerminalCharacters = 128 * 1024
 const spotifyPollDelay = 2_000
@@ -254,6 +335,57 @@ export type WorkspaceDock = {
   onSelect: (projectId: string) => void
   onClose: (projectId: string) => void
   onOpenProject: (projectId: string) => void
+}
+
+// Compiz-style wobble rendering: warp a panel onto its four displaced corners
+// with a projective transform (adjugate method) expressed as a CSS matrix3d.
+function adjugate(m: number[]) {
+  return [
+    m[4] * m[8] - m[5] * m[7],
+    m[2] * m[7] - m[1] * m[8],
+    m[1] * m[5] - m[2] * m[4],
+    m[5] * m[6] - m[3] * m[8],
+    m[0] * m[8] - m[2] * m[6],
+    m[2] * m[3] - m[0] * m[5],
+    m[3] * m[7] - m[4] * m[6],
+    m[1] * m[6] - m[0] * m[7],
+    m[0] * m[4] - m[1] * m[3],
+  ]
+}
+
+function multiplyMatrices(a: number[], b: number[]) {
+  const product = new Array<number>(9)
+  for (let row = 0; row < 3; row++) {
+    for (let column = 0; column < 3; column++) {
+      product[3 * row + column] =
+        a[3 * row] * b[column] +
+        a[3 * row + 1] * b[column + 3] +
+        a[3 * row + 2] * b[column + 6]
+    }
+  }
+  return product
+}
+
+function basisToPoints(points: number[]) {
+  const [x1, y1, x2, y2, x3, y3, x4, y4] = points
+  const m = [x1, x2, x3, y1, y2, y3, 1, 1, 1]
+  const a = adjugate(m)
+  const v = [
+    a[0] * x4 + a[1] * y4 + a[2],
+    a[3] * x4 + a[4] * y4 + a[5],
+    a[6] * x4 + a[7] * y4 + a[8],
+  ]
+  return multiplyMatrices(m, [v[0], 0, 0, 0, v[1], 0, 0, 0, v[2]])
+}
+
+// corners: TL, TR, BL, BR as flat [x, y, ...] pairs.
+function quadWarp(width: number, height: number, corners: number[]) {
+  const source = basisToPoints([0, 0, width, 0, 0, height, width, height])
+  const target = basisToPoints(corners)
+  const t = multiplyMatrices(target, adjugate(source))
+  if (!t[8]) return ""
+  for (let i = 0; i < 9; i++) t[i] /= t[8]
+  return `matrix3d(${t[0]}, ${t[3]}, 0, ${t[6]}, ${t[1]}, ${t[4]}, 0, ${t[7]}, 0, 0, 1, 0, ${t[2]}, ${t[5]}, 0, 1)`
 }
 
 function ProjectWorkspace({
@@ -282,6 +414,7 @@ function ProjectWorkspace({
   onOpenFolder: () => Promise<void>
 }) {
   const [nodes, setNodes] = useState<WorkspaceNode[]>([])
+  const [regions, setRegions] = useState<StoredRegion[]>([])
   const [viewport, setViewport] = useState<WorkspaceViewport>({
     x: 80,
     y: 88,
@@ -331,6 +464,20 @@ function ProjectWorkspace({
     y: number
     submenuSide: "left" | "right"
   } | null>(null)
+  // The most recently used add-menu group renders first: fresh installs see
+  // Documents on top, developers who reach for terminals daily keep them on top.
+  const [menuGroupOrder, setMenuGroupOrder] = useState<string[]>(readMenuGroupOrder)
+  const recordMenuGroupUse = (group: string) => {
+    setMenuGroupOrder((current) => {
+      const next = [group, ...current.filter((key) => key !== group)]
+      try {
+        localStorage.setItem(menuGroupOrderKey, JSON.stringify(next))
+      } catch {
+        // Ordering is a convenience; storage failures shouldn't break the menu.
+      }
+      return next
+    })
+  }
 
   const canvasRef = useRef<HTMLDivElement>(null)
   const interactionRef = useRef<Interaction | null>(null)
@@ -346,7 +493,215 @@ function ProjectWorkspace({
     width?: number
     height?: number
   } | null>(null)
+  // A dragged region carries its member panels; the pending positions live here
+  // until release, mirroring nodeOverrideRef for single panels.
+  const regionOverrideRef = useRef<{
+    id: string
+    x?: number
+    y?: number
+    width?: number
+    height?: number
+    members?: Map<string, { x: number; y: number }>
+  } | null>(null)
   const panelElsRef = useRef(new Map<string, HTMLElement>())
+  // Wobbly windows (Compiz-style): four corner masses on damped springs. Drag
+  // impulses displace each corner in proportion to its distance from the grab
+  // point — the grabbed corner sticks to the pointer, the far ones trail
+  // behind — and the panel is warped onto the displaced quad. Driven straight
+  // from pointer moves and written imperatively — no re-renders.
+  const wobblesRef = useRef(
+    new Map<
+      string,
+      {
+        lastX: number
+        lastY: number
+        width: number
+        height: number
+        // TL, TR, BL, BR: spring offset, velocity, and lag weight per corner.
+        corners: { ox: number; oy: number; vx: number; vy: number; w: number }[]
+        raf: number
+        prev: number
+        active: boolean
+      }
+    >(),
+  )
+
+  const stepWobble = (id: string, now: number) => {
+    const wobble = wobblesRef.current.get(id)
+    if (!wobble) return
+    const element = panelElsRef.current.get(id)
+    const dt = Math.min((now - wobble.prev) / 1000, 1 / 30)
+    wobble.prev = now
+    const stiffness = 180
+    const damping = 10
+    let energy = 0
+    for (const corner of wobble.corners) {
+      corner.vx += (-stiffness * corner.ox - damping * corner.vx) * dt
+      corner.vy += (-stiffness * corner.oy - damping * corner.vy) * dt
+      corner.ox += corner.vx * dt
+      corner.oy += corner.vy * dt
+      energy = Math.max(
+        energy,
+        Math.abs(corner.ox),
+        Math.abs(corner.oy),
+        Math.abs(corner.vx) / 10,
+        Math.abs(corner.vy) / 10,
+      )
+    }
+    // While the pointer is still dragging, the loop must stay alive even when
+    // the springs momentarily rest — the next impulse can arrive any time.
+    if (!wobble.active && energy < 0.1) {
+      if (element) {
+        element.style.transform = ""
+        element.style.transformOrigin = ""
+      }
+      wobblesRef.current.delete(id)
+      return
+    }
+    if (element) {
+      const [tl, tr, bl, br] = wobble.corners
+      element.style.transform = quadWarp(wobble.width, wobble.height, [
+        tl.ox,
+        tl.oy,
+        wobble.width + tr.ox,
+        tr.oy,
+        bl.ox,
+        wobble.height + bl.oy,
+        wobble.width + br.ox,
+        wobble.height + br.oy,
+      ])
+    }
+    wobble.raf = requestAnimationFrame((next) => stepWobble(id, next))
+  }
+
+  const grabWobble = (
+    id: string,
+    x: number,
+    y: number,
+    grabX: number,
+    grabY: number,
+  ) => {
+    if (document.documentElement.dataset.wobbly !== "on") return
+    const element = panelElsRef.current.get(id)
+    if (!element) return
+    // Corner lag grows with distance from the grab point, so the grabbed spot
+    // follows the pointer and the far corners trail behind.
+    const weights = [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ].map(([cx, cy]) => Math.min(1, Math.hypot(cx - grabX, cy - grabY)) * 0.55)
+    let wobble = wobblesRef.current.get(id)
+    if (!wobble) {
+      wobble = {
+        lastX: x,
+        lastY: y,
+        width: element.offsetWidth,
+        height: element.offsetHeight,
+        corners: weights.map((w) => ({ ox: 0, oy: 0, vx: 0, vy: 0, w })),
+        raf: 0,
+        prev: performance.now(),
+        active: true,
+      }
+      wobblesRef.current.set(id, wobble)
+      wobble.raf = requestAnimationFrame((now) => stepWobble(id, now))
+    } else {
+      // Re-grabbed while still settling: keep the motion, refresh the grip.
+      wobble.lastX = x
+      wobble.lastY = y
+      wobble.width = element.offsetWidth
+      wobble.height = element.offsetHeight
+      wobble.active = true
+      wobble.corners.forEach((corner, index) => {
+        corner.w = weights[index]
+      })
+    }
+    element.style.transformOrigin = "0 0"
+  }
+
+  const wobblePanel = (id: string, x: number, y: number) => {
+    const wobble = wobblesRef.current.get(id)
+    if (!wobble) return
+    const dx = x - wobble.lastX
+    const dy = y - wobble.lastY
+    wobble.lastX = x
+    wobble.lastY = y
+    const limit = Math.min(90, wobble.width * 0.3, wobble.height * 0.3)
+    for (const corner of wobble.corners) {
+      corner.ox = Math.max(-limit, Math.min(limit, corner.ox - dx * corner.w))
+      corner.oy = Math.max(-limit, Math.min(limit, corner.oy - dy * corner.w))
+    }
+  }
+
+  const releaseWobble = (id: string) => {
+    const wobble = wobblesRef.current.get(id)
+    if (wobble) wobble.active = false
+  }
+
+  useEffect(
+    () => () => {
+      for (const wobble of wobblesRef.current.values()) {
+        if (wobble.raf) cancelAnimationFrame(wobble.raf)
+      }
+    },
+    [],
+  )
+
+  // Freshly spawned panels of any type pop in on the same springs, gated by
+  // the same settings toggle as drag wobble: corners start pulled inward and
+  // jiggle out to rest. CSS keeps the opacity fade (see .wobble-pop).
+  const spawnWobble = (id: string) => {
+    if (document.documentElement.dataset.wobbly !== "on") return
+    const element = panelElsRef.current.get(id)
+    if (!element) return
+    const width = element.offsetWidth
+    const height = element.offsetHeight
+    if (!width || !height) return
+    const previous = wobblesRef.current.get(id)
+    if (previous?.raf) cancelAnimationFrame(previous.raf)
+    const inset = Math.min(28, width * 0.1, height * 0.1)
+    const wobble = {
+      lastX: 0,
+      lastY: 0,
+      width,
+      height,
+      corners: [
+        [1, 1],
+        [-1, 1],
+        [1, -1],
+        [-1, -1],
+      ].map(([sx, sy]) => ({
+        ox: sx * inset,
+        oy: sy * inset,
+        vx: 0,
+        vy: 0,
+        w: 0,
+      })),
+      raf: 0,
+      prev: performance.now(),
+      active: false,
+    }
+    element.style.transformOrigin = "0 0"
+    wobblesRef.current.set(id, wobble)
+    wobble.raf = requestAnimationFrame((now) => stepWobble(id, now))
+  }
+
+  // Ids present now but missing from the previous pass are freshly spawned;
+  // a workspace (re)load resets the baseline so nothing pops en masse.
+  const seenNodeIdsRef = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!loaded) {
+      seenNodeIdsRef.current = null
+      return
+    }
+    const seen = seenNodeIdsRef.current
+    seenNodeIdsRef.current = new Set(nodes.map((node) => node.id))
+    if (!seen) return
+    for (const node of nodes) {
+      if (!seen.has(node.id)) spawnWobble(node.id)
+    }
+  }, [nodes, loaded])
   const panelsLayerRef = useRef<HTMLDivElement>(null)
   const gridFineRef = useRef<HTMLDivElement>(null)
   const gridMajorRef = useRef<HTMLDivElement>(null)
@@ -400,10 +755,32 @@ function ProjectWorkspace({
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const latestLayoutRef = useRef("")
   const lastQueuedLayoutRef = useRef("")
+  const historyRef = useRef<GeometrySnapshot[]>([])
+  const futureRef = useRef<GeometrySnapshot[]>([])
+  const [droppingFiles, setDroppingFiles] = useState(false)
+  const [showFirstRunHint, setShowFirstRunHint] = useState(() => {
+    try {
+      return !localStorage.getItem(firstRunHintKey)
+    } catch {
+      return false
+    }
+  })
+  const dismissFirstRunHint = () => {
+    setShowFirstRunHint(false)
+    try {
+      localStorage.setItem(firstRunHintKey, "1")
+    } catch {
+      // The hint just reappears next launch; nothing breaks.
+    }
+  }
 
   nodesRef.current = nodes
   viewportRef.current = viewport
   loadedRef.current = loaded
+  const regionsRef = useRef(regions)
+  regionsRef.current = regions
+  const regionElsRef = useRef(new Map<string, HTMLElement>())
+  const terminalOutputAtRef = useRef(new Map<string, number>())
 
   useEffect(() => setProjectMode(initialMode), [initialMode, project.id])
 
@@ -477,8 +854,8 @@ function ProjectWorkspace({
   }, [project.id])
 
   const serializedLayout = useMemo(
-    () => serializeWorkspace(viewport, nodes),
-    [nodes, viewport],
+    () => serializeWorkspace(viewport, nodes, regions),
+    [nodes, regions, viewport],
   )
   latestLayoutRef.current = serializedLayout
 
@@ -509,6 +886,7 @@ function ProjectWorkspace({
     data: string,
     alreadyTruncated = false,
   ) => {
+    terminalOutputAtRef.current.set(nodeID, Date.now())
     const view = terminalViewsRef.current.get(nodeID)
     if (view) {
       if (alreadyTruncated) {
@@ -555,6 +933,7 @@ function ProjectWorkspace({
     id: string,
     shell: TerminalShell,
     generation = workspaceGeneration.current,
+    subfolder = "",
   ): Promise<string | undefined> => {
     const cancellationKey = `${generation}:${id}`
     try {
@@ -566,11 +945,18 @@ function ProjectWorkspace({
               selectedAppId,
               activeContext.experimentId,
             )
-          : await projectService.startProjectTerminal(
-              project,
-              shell,
-              activeContext.experimentId,
-            )
+          : subfolder
+            ? await projectService.startProjectTerminalInFolder(
+                project,
+                shell,
+                activeContext.experimentId,
+                subfolder,
+              )
+            : await projectService.startProjectTerminal(
+                project,
+                shell,
+                activeContext.experimentId,
+              )
       const cancelled = cancelledTerminalStartsRef.current.delete(cancellationKey)
       if (
         generation !== workspaceGeneration.current ||
@@ -642,8 +1028,9 @@ function ProjectWorkspace({
     id: string,
     shell: TerminalShell,
     generation = workspaceGeneration.current,
+    subfolder = "",
   ) => {
-    const start = startTerminal(id, shell, generation)
+    const start = startTerminal(id, shell, generation, subfolder)
     terminalStartPromisesRef.current.add(start)
     void start.finally(() => terminalStartPromisesRef.current.delete(start))
     return start
@@ -800,6 +1187,18 @@ function ProjectWorkspace({
         bufferedTerminalOutputRef.current.delete(nodeID)
         return
       }
+      const exited = nodesRef.current.find((node) => node.id === nodeID)
+      if (
+        exited?.type === "terminal" &&
+        (exited.shell === "claude" || exited.shell === "codex" || exited.shell === "opencode")
+      ) {
+        void notifyInBackground(
+          `${terminalTitles[exited.shell]} finished`,
+          payload.error
+            ? `The agent stopped with an error in ${project.name}`
+            : `The agent finished its work in ${project.name}`,
+        )
+      }
       writeTerminalOutput(
         nodeID,
         payload.error
@@ -922,6 +1321,7 @@ function ProjectWorkspace({
     const generation = ++workspaceGeneration.current
     setLoaded(false)
     setNodes([])
+    setRegions([])
     setWorkspaceBackground("")
     setIsPanning(false)
     setSelectedID(null)
@@ -933,6 +1333,8 @@ function ProjectWorkspace({
     terminalFocusRequestsRef.current.clear()
     editorSessionNodesRef.current.clear()
     pendingEditorExitsRef.current.clear()
+    historyRef.current = []
+    futureRef.current = []
 
     const load = async () => {
       try {
@@ -950,11 +1352,16 @@ function ProjectWorkspace({
           if (node.type === "photo") return { ...node, status: "loading" }
           return node
         })
-        const normalized = serializeWorkspace(layout.viewport, restored)
+        const normalized = serializeWorkspace(
+          layout.viewport,
+          restored,
+          layout.regions,
+        )
         latestLayoutRef.current = normalized
         lastQueuedLayoutRef.current = normalized
         setViewport(layout.viewport)
         setNodes(restored)
+        setRegions(layout.regions)
         setWorkspaceBackground(background)
         setLoaded(true)
 
@@ -1233,16 +1640,59 @@ function ProjectWorkspace({
     )
   }
 
+  // Undo/redo covers panel geometry only (move/resize/z). Snapshots reconcile by
+  // id so live session state (terminals, editors) is never rolled back; add/close
+  // are history barriers because closing kills real backend sessions.
+  const pushGeometryHistory = () => {
+    const snapshot = snapshotGeometry(nodesRef.current)
+    historyRef.current =
+      historyRef.current.length >= maximumHistoryEntries
+        ? [...historyRef.current.slice(1), snapshot]
+        : [...historyRef.current, snapshot]
+    futureRef.current = []
+  }
+
+  const clearGeometryHistory = () => {
+    historyRef.current = []
+    futureRef.current = []
+  }
+
+  const applyGeometry = (snapshot: GeometrySnapshot) => {
+    setNodes((current) =>
+      current.map((node) => {
+        const geometry = snapshot.get(node.id)
+        return geometry ? { ...node, ...geometry } : node
+      }),
+    )
+  }
+
+  const undoGeometry = () => {
+    const previous = historyRef.current.at(-1)
+    if (!previous) return
+    futureRef.current = [...futureRef.current, snapshotGeometry(nodesRef.current)]
+    historyRef.current = historyRef.current.slice(0, -1)
+    applyGeometry(previous)
+  }
+
+  const redoGeometry = () => {
+    const next = futureRef.current.at(-1)
+    if (!next) return
+    historyRef.current = [...historyRef.current, snapshotGeometry(nodesRef.current)]
+    futureRef.current = futureRef.current.slice(0, -1)
+    applyGeometry(next)
+  }
+
   const centeredPosition = (width: number, height: number) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     const current = viewportRef.current
-    const offset = (nodesRef.current.length % 6) * 24
-    return {
+    const centered = {
       x: ((rect?.width ?? window.innerWidth) / 2 - current.x) / current.zoom -
-        width / 2 + offset,
+        width / 2,
       y: ((rect?.height ?? window.innerHeight) / 2 - current.y) / current.zoom -
-        height / 2 + offset,
+        height / 2,
     }
+    // New panels land on the nearest free slot instead of stacking.
+    return findFreePosition(nodesRef.current, centered, { width, height })
   }
 
   const ensureNodeCapacity = () => {
@@ -1251,11 +1701,22 @@ function ProjectWorkspace({
     }
   }
 
-  const addTerminal = (shell: TerminalShell) => {
+  const addTerminal = (shell: TerminalShell, region?: StoredRegion) => {
     ensureNodeCapacity()
+    clearGeometryHistory()
     const id = workspaceID(shell)
     const size = { width: 540, height: 330 }
-    const position = centeredPosition(size.width, size.height)
+    // A terminal born inside a folder lands in that folder and inherits its cwd.
+    const position = region
+      ? findFreePosition(
+          nodesRef.current.filter((node) => node.regionId === region.id),
+          {
+            x: region.x + tidyGap,
+            y: region.y + tidyGap * 2,
+          },
+          size,
+        )
+      : centeredPosition(size.width, size.height)
     const node: TerminalNode = {
       id,
       type: "terminal",
@@ -1264,12 +1725,21 @@ function ProjectWorkspace({
       ...size,
       z: Math.max(0, ...nodesRef.current.map((item) => item.z)) + 1,
       status: "starting",
+      ...(region ? { regionId: region.id } : {}),
     }
     closedTerminalNodesRef.current.delete(id)
     terminalFocusRequestsRef.current.add(id)
     setNodes((current) => [...current, node])
     setSelectedID(id)
-    return { id, session: launchTerminal(id, shell) }
+    return {
+      id,
+      session: launchTerminal(
+        id,
+        shell,
+        workspaceGeneration.current,
+        region?.cwd ?? "",
+      ),
+    }
   }
 
   const appTerminalSessions = useMemo<AppTerminalSession[]>(
@@ -1317,6 +1787,7 @@ function ProjectWorkspace({
 
   const addBrowser = (url: string) => {
     ensureNodeCapacity()
+    clearGeometryHistory()
     const id = workspaceID("browser")
     const size = { width: 680, height: 430 }
     const position = centeredPosition(size.width, size.height)
@@ -1339,6 +1810,7 @@ function ProjectWorkspace({
       return
     }
     ensureNodeCapacity()
+    clearGeometryHistory()
     const id = workspaceID("player")
     const size = { width: 420, height: 190 }
     const node: PlayerNode = {
@@ -1359,6 +1831,7 @@ function ProjectWorkspace({
       ensureNodeCapacity()
       const asset = await projectService.chooseProjectWorkspacePhoto(project)
       if (!asset?.assetId || !asset.dataURL) return
+      clearGeometryHistory()
       const id = workspaceID("photo")
       const size = { width: 520, height: 360 }
       const node: PhotoNode = {
@@ -1379,6 +1852,295 @@ function ProjectWorkspace({
       setPhotoBusy(false)
     }
   }
+
+  const nextNodeZ = () =>
+    Math.max(0, ...nodesRef.current.map((item) => item.z)) + 1
+
+  const addNote = (text = "") => {
+    ensureNodeCapacity()
+    clearGeometryHistory()
+    const id = workspaceID("note")
+    const size = { width: 320, height: 280 }
+    const node: NoteNode = {
+      id,
+      type: "note",
+      text: text.slice(0, maximumNoteCharacters),
+      color: "default",
+      ...centeredPosition(size.width, size.height),
+      ...size,
+      z: nextNodeZ(),
+    }
+    setNodes((current) => [...current, node])
+    setSelectedID(id)
+  }
+
+  const addTodo = (items: string[] = []) => {
+    ensureNodeCapacity()
+    clearGeometryHistory()
+    const id = workspaceID("todo")
+    const size = { width: 320, height: 300 }
+    const node: TodoNode = {
+      id,
+      type: "todo",
+      items: items.slice(0, maximumTodoItems).map((text) => ({
+        id: workspaceID("item"),
+        text: text.slice(0, maximumTodoItemCharacters),
+        done: false,
+      })),
+      ...centeredPosition(size.width, size.height),
+      ...size,
+      z: nextNodeZ(),
+    }
+    setNodes((current) => [...current, node])
+    setSelectedID(id)
+  }
+
+  const documentNodeSize = (kind: DocumentNode["kind"]) =>
+    kind === "audio"
+      ? { width: 420, height: 190 }
+      : kind === "image" || kind === "video"
+        ? { width: 560, height: 400 }
+        : { width: 560, height: 560 }
+
+  const addDocumentNode = (asset: {
+    assetId: string
+    kind: string
+    name: string
+  }) => {
+    ensureNodeCapacity()
+    clearGeometryHistory()
+    if (!documentKinds.includes(asset.kind as DocumentNode["kind"])) {
+      throw new Error("This file type is not supported")
+    }
+    const kind = asset.kind as DocumentNode["kind"]
+    const id = workspaceID("document")
+    const size = documentNodeSize(kind)
+    const node: DocumentNode = {
+      id,
+      type: "document",
+      assetId: asset.assetId,
+      name: asset.name,
+      kind,
+      ...centeredPosition(size.width, size.height),
+      ...size,
+      z: nextNodeZ(),
+    }
+    setNodes((current) => [...current, node])
+    setSelectedID(id)
+  }
+
+  const addDocument = async () => {
+    if (photoBusy) return
+    setPhotoBusy(true)
+    try {
+      ensureNodeCapacity()
+      const asset = await projectService.chooseProjectWorkspaceFile(project)
+      if (!asset?.assetId) return
+      addDocumentNode(asset)
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) })
+    } finally {
+      setPhotoBusy(false)
+    }
+  }
+
+  const importDroppedFiles = async (paths: string[]) => {
+    let added = 0
+    for (const path of paths.slice(0, 12)) {
+      try {
+        ensureNodeCapacity()
+        const asset = await projectService.importProjectWorkspaceAsset(
+          project,
+          path,
+        )
+        if (asset?.assetId) {
+          addDocumentNode(asset)
+          added += 1
+        }
+      } catch (error) {
+        setNotice({ tone: "error", message: errorMessage(error) })
+      }
+    }
+    if (added > 0) {
+      setNotice({
+        tone: "success",
+        message: added === 1 ? "Document added" : `${added} documents added`,
+      })
+    }
+  }
+
+  useEffect(() => {
+    // Only the visible workspace claims OS file drops; hidden live workspaces
+    // and other modes let the drop fall through.
+    const unsubscribe = subscribeToFileDrops((paths) => {
+      if (projectMode !== "workspace" || !loadedRef.current) return false
+      if (canvasRef.current?.offsetParent === null) return false
+      setDroppingFiles(false)
+      void importDroppedFiles(paths)
+      return true
+    })
+    return unsubscribe
+  }, [projectMode, project.id, activeContext.experimentId])
+
+  useEffect(() => {
+    // Native drag events may be swallowed by the Wails drop handler on some
+    // platforms; the overlay is a best-effort hint, the drop itself always works.
+    let depth = 0
+    const isFileDrag = (event: DragEvent) =>
+      Boolean(event.dataTransfer?.types.includes("Files"))
+    const onDragEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      depth += 1
+      setDroppingFiles(true)
+    }
+    const onDragLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDroppingFiles(false)
+    }
+    const onDropOrEnd = () => {
+      depth = 0
+      setDroppingFiles(false)
+    }
+    window.addEventListener("dragenter", onDragEnter)
+    window.addEventListener("dragleave", onDragLeave)
+    window.addEventListener("drop", onDropOrEnd)
+    window.addEventListener("dragend", onDropOrEnd)
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter)
+      window.removeEventListener("dragleave", onDragLeave)
+      window.removeEventListener("drop", onDropOrEnd)
+      window.removeEventListener("dragend", onDropOrEnd)
+    }
+  }, [])
+
+  const runQuickAction = (action: WorkspaceQuickAction) => {
+    try {
+      if (action === "note") addNote()
+      else if (action === "todo") addTodo()
+      else if (action === "document") void addDocument()
+      else if (action === "tidy") tidyAll()
+      else addTerminal("wsl")
+    } catch (error) {
+      setNotice({ tone: "error", message: errorMessage(error) })
+    }
+  }
+  const runQuickActionRef = useRef(runQuickAction)
+  runQuickActionRef.current = runQuickAction
+
+  useEffect(() => {
+    // Palette/Home intents: only the visible workspace claims them.
+    const onAction = (event: Event) => {
+      const detail = (event as CustomEvent).detail as unknown
+      if (!isWorkspaceActionDetail(detail)) return
+      if (!loadedRef.current || canvasRef.current?.offsetParent === null) return
+      detail.claim()
+      if (projectMode !== "workspace") setProjectMode("workspace")
+      runQuickActionRef.current(detail.action)
+    }
+    window.addEventListener(workspaceActionEvent, onAction)
+    return () => window.removeEventListener(workspaceActionEvent, onAction)
+  }, [projectMode])
+
+  useEffect(() => {
+    // A Home chip may have queued an action before this workspace existed.
+    if (!loaded) return
+    const queued = takeQuickAction()
+    if (queued && canvasRef.current?.offsetParent !== null) {
+      runQuickActionRef.current(queued)
+    }
+  }, [loaded])
+
+  // Agent desk actions: the bridge validated scope and emitted an event; the
+  // workspace that owns this project context materializes the panel.
+  useEffect(() => {
+    const off = EventsOn("seizen:desk-action", (payload: unknown) => {
+      if (!isRecord(payload) || payload.projectId !== project.id) return
+      if ((payload.experimentId ?? "") !== activeContext.experimentId) return
+      if (!loadedRef.current) return
+      const detail = payload.payload
+      try {
+        if (payload.kind === "note" && isRecord(detail) && typeof detail.text === "string") {
+          addNote(detail.text)
+        } else if (payload.kind === "todo" && isRecord(detail) && Array.isArray(detail.items)) {
+          addTodo(detail.items.filter((item): item is string => typeof item === "string"))
+        } else if (payload.kind === "browser" && isRecord(detail) && typeof detail.url === "string") {
+          addBrowser(normalizeBrowserURL(detail.url))
+        } else if (
+          payload.kind === "document" &&
+          isRecord(detail) &&
+          typeof detail.assetId === "string" &&
+          typeof detail.kind === "string" &&
+          typeof detail.name === "string"
+        ) {
+          addDocumentNode({
+            assetId: detail.assetId,
+            kind: detail.kind,
+            name: detail.name,
+          })
+        } else if (payload.kind === "tidy") {
+          tidyAll()
+        }
+      } catch (error) {
+        setNotice({ tone: "error", message: errorMessage(error) })
+      }
+    })
+    return off
+  }, [project.id, activeContext.experimentId])
+
+  // Plain-language strip of what the assistant just did in this project.
+  const [assistantActivity, setAssistantActivity] = useState<{
+    message: string
+    tone: "ok" | "error"
+  } | null>(null)
+  useEffect(() => {
+    const off = EventsOn("agent.audit", (payload: unknown) => {
+      if (!isRecord(payload) || payload.projectId !== project.id) return
+      const phrase = assistantPhrase(
+        typeof payload.toolName === "string" ? payload.toolName : "",
+      )
+      if (!phrase) return
+      const failed = payload.success === false
+      setAssistantActivity({
+        message: failed ? `${phrase} — it did not work` : phrase,
+        tone: failed ? "error" : "ok",
+      })
+    })
+    return off
+  }, [project.id])
+  useEffect(() => {
+    if (!assistantActivity) return
+    const timer = window.setTimeout(() => setAssistantActivity(null), 5000)
+    return () => window.clearTimeout(timer)
+  }, [assistantActivity])
+
+  // Activity border for agent terminals: green while output flows (working),
+  // amber when the CLI has gone quiet and likely waits on the user.
+  // ponytail: output-recency heuristic; replace with real agent state if a CLI ever exposes it.
+  const [agentActivity, setAgentActivity] = useState<Record<string, "working" | "waiting">>({})
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now()
+      const next: Record<string, "working" | "waiting"> = {}
+      for (const node of nodesRef.current) {
+        if (node.type !== "terminal" || !node.sessionId || node.status !== "running") continue
+        if (node.shell !== "claude" && node.shell !== "codex" && node.shell !== "opencode") continue
+        const last = terminalOutputAtRef.current.get(node.id) ?? 0
+        next[node.id] = now - last < 6_000 ? "working" : "waiting"
+      }
+      setAgentActivity((current) => {
+        const currentKeys = Object.keys(current)
+        if (
+          currentKeys.length === Object.keys(next).length &&
+          currentKeys.every((key) => current[key] === next[key])
+        ) {
+          return current
+        }
+        return next
+      })
+    }, 3_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const retryEditor = (node: EditorNode) => {
     updateNode(node.id, (current) =>
@@ -1413,6 +2175,7 @@ function ProjectWorkspace({
       return
     }
     ensureNodeCapacity()
+    clearGeometryHistory()
     const id = workspaceID(`editor-${editor.id}`)
     const size = { width: 860, height: 560 }
     const node: EditorNode = {
@@ -1462,18 +2225,26 @@ function ProjectWorkspace({
           `${workspaceGeneration.current}:${id}`,
         )
       }
-    } else if (node?.type === "photo") {
+    } else if (node?.type === "photo" || node?.type === "document") {
       const remaining = nodesRef.current.filter((item) => item.id !== id)
-      const layout = serializeWorkspace(viewportRef.current, remaining)
+      const layout = serializeWorkspace(
+        viewportRef.current,
+        remaining,
+        regionsRef.current,
+      )
       window.clearTimeout(saveTimerRef.current)
       latestLayoutRef.current = layout
       lastQueuedLayoutRef.current = layout
       queueSave(project, layout, activeContext.experimentId, () =>
-        projectService.deleteProjectWorkspacePhoto(project, node.assetId),
+        node.type === "photo"
+          ? projectService.deleteProjectWorkspacePhoto(project, node.assetId)
+          : projectService.deleteProjectWorkspaceAsset(project, node.assetId),
       )
     }
+    clearGeometryHistory()
     terminalViewsRef.current.delete(id)
     bufferedTerminalOutputRef.current.delete(id)
+    terminalOutputAtRef.current.delete(id)
     setNodes((current) => current.filter((item) => item.id !== id))
     setSelectedID((current) => (current === id ? null : current))
     setMaximizedID((current) => (current === id ? null : current))
@@ -1504,6 +2275,23 @@ function ProjectWorkspace({
         addTerminal("claude")
       } else if (commandName === "browser" || commandName === "navegador") {
         addBrowser(normalizeBrowserURL(argument))
+      } else if (commandName === "note" || commandName === "nota") {
+        addNote()
+      } else if (
+        commandName === "todo" ||
+        commandName === "tareas" ||
+        commandName === "lista"
+      ) {
+        addTodo()
+      } else if (
+        commandName === "open" ||
+        commandName === "abrir" ||
+        commandName === "doc" ||
+        commandName === "documento"
+      ) {
+        await addDocument()
+      } else if (commandName === "tidy" || commandName === "ordenar") {
+        tidyAll()
       } else if (commandName === "folder" || commandName === "carpeta") {
         await onOpenFolder()
         setNotice({ tone: "success", message: "Folder opened" })
@@ -1512,7 +2300,13 @@ function ProjectWorkspace({
         setCommandMessage("Available commands")
         return
       } else {
-        setCommandMessage(`Unknown command: ${name}`)
+        const suggestion = suggestCommand(commandName)
+        setShowHelp(!suggestion)
+        setCommandMessage(
+          suggestion
+            ? `Unknown command: ${name} — did you mean "${suggestion}"?`
+            : `Unknown command: ${name}. Try one of these:`,
+        )
         return
       }
       setCommand("")
@@ -1529,6 +2323,7 @@ function ProjectWorkspace({
     if ((event.target as HTMLElement).closest("button,input")) return
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+    pushGeometryHistory()
     bringToFront(node.id)
     interactionRef.current = {
       kind: "move",
@@ -1540,6 +2335,21 @@ function ProjectWorkspace({
       startY: node.y,
       zoom: viewportRef.current.zoom,
     }
+    // Wobbly windows bend around the grab point, so the grabbed spot follows
+    // the pointer and the rest of the panel trails behind.
+    const element = panelElsRef.current.get(node.id)
+    if (element) {
+      const rect = element.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        grabWobble(
+          node.id,
+          node.x,
+          node.y,
+          (event.clientX - rect.left) / rect.width,
+          (event.clientY - rect.top) / rect.height,
+        )
+      }
+    }
   }
 
   const beginResize = (
@@ -1549,6 +2359,7 @@ function ProjectWorkspace({
     if (event.button !== 0) return
     event.stopPropagation()
     event.currentTarget.setPointerCapture(event.pointerId)
+    pushGeometryHistory()
     bringToFront(node.id)
     interactionRef.current = {
       kind: "resize",
@@ -1587,12 +2398,6 @@ function ProjectWorkspace({
       .then((integrations) => setEditorIntegrations(integrations))
       .catch(() => undefined)
     const rect = event.currentTarget.getBoundingClientRect()
-    // TODO(debug): remove after diagnosing menu position
-    console.error("[menu-debug]", {
-      clientX: event.clientX,
-      clientY: event.clientY,
-      rect: { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) },
-    })
     setSelectedID(null)
     setWorkspaceMenu({
       x: Math.max(8, Math.min(event.clientX - rect.left, rect.width - 232)),
@@ -1623,6 +2428,36 @@ function ProjectWorkspace({
       nodeOverrideRef.current = { id: interaction.id, x, y }
       const element = panelElsRef.current.get(interaction.id)
       if (element) element.style.translate = `${x}px ${y}px`
+      wobblePanel(interaction.id, x, y)
+    } else if (interaction.kind === "region-move") {
+      const worldDeltaX = deltaX / interaction.zoom
+      const worldDeltaY = deltaY / interaction.zoom
+      const x = interaction.startX + worldDeltaX
+      const y = interaction.startY + worldDeltaY
+      const members = new Map<string, { x: number; y: number }>()
+      for (const member of interaction.members) {
+        const position = {
+          x: member.startX + worldDeltaX,
+          y: member.startY + worldDeltaY,
+        }
+        members.set(member.id, position)
+        const element = panelElsRef.current.get(member.id)
+        if (element) {
+          element.style.translate = `${position.x}px ${position.y}px`
+        }
+      }
+      regionOverrideRef.current = { id: interaction.id, x, y, members }
+      const element = regionElsRef.current.get(interaction.id)
+      if (element) element.style.translate = `${x}px ${y}px`
+    } else if (interaction.kind === "region-resize") {
+      const width = Math.max(160, interaction.startWidth + deltaX / interaction.zoom)
+      const height = Math.max(160, interaction.startHeight + deltaY / interaction.zoom)
+      regionOverrideRef.current = { id: interaction.id, width, height }
+      const element = regionElsRef.current.get(interaction.id)
+      if (element) {
+        element.style.width = `${width}px`
+        element.style.height = `${height}px`
+      }
     } else {
       const width = Math.max(
         minimumNodeWidth,
@@ -1643,6 +2478,9 @@ function ProjectWorkspace({
 
   const endInteraction = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (interactionRef.current?.pointerId !== event.pointerId) return
+    if (interactionRef.current.kind === "move") {
+      releaseWobble(interactionRef.current.id)
+    }
     interactionRef.current = null
     setIsPanning(false)
 
@@ -1654,13 +2492,51 @@ function ProjectWorkspace({
     const pendingNode = nodeOverrideRef.current
     if (pendingNode) {
       nodeOverrideRef.current = null
-      updateNode(pendingNode.id, (node) => ({
-        ...node,
-        x: pendingNode.x ?? node.x,
-        y: pendingNode.y ?? node.y,
-        width: pendingNode.width ?? node.width,
-        height: pendingNode.height ?? node.height,
-      }))
+      const moved = pendingNode.x !== undefined || pendingNode.y !== undefined
+      const neighbors = nodesRef.current.filter(
+        (node) => node.id !== pendingNode.id,
+      )
+      updateNode(pendingNode.id, (node) => {
+        const box = {
+          x: pendingNode.x ?? node.x,
+          y: pendingNode.y ?? node.y,
+          width: pendingNode.width ?? node.width,
+          height: pendingNode.height ?? node.height,
+        }
+        // Grid + neighbor-edge snap on release keeps the board tidy for free.
+        const snapped = moved ? snapDragPosition(box, neighbors) : box
+        const settled = { ...box, x: snapped.x, y: snapped.y }
+        // Folder membership follows where the panel actually landed.
+        const regionId = regionContaining(settled, regionsRef.current)
+        return { ...node, ...settled, regionId }
+      })
+    }
+
+    const pendingRegion = regionOverrideRef.current
+    if (pendingRegion) {
+      regionOverrideRef.current = null
+      setRegions((current) =>
+        current.map((region) =>
+          region.id === pendingRegion.id
+            ? {
+                ...region,
+                x: pendingRegion.x ?? region.x,
+                y: pendingRegion.y ?? region.y,
+                width: pendingRegion.width ?? region.width,
+                height: pendingRegion.height ?? region.height,
+              }
+            : region,
+        ),
+      )
+      const members = pendingRegion.members
+      if (members && members.size > 0) {
+        setNodes((current) =>
+          current.map((node) => {
+            const position = members.get(node.id)
+            return position ? { ...node, x: position.x, y: position.y } : node
+          }),
+        )
+      }
     }
   }
 
@@ -1698,6 +2574,124 @@ function ProjectWorkspace({
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
     setViewport(fitWorkspaceViewport(rect.width, rect.height, targets))
+  }
+
+  // --- Canvas folders (regions) ------------------------------------------
+  const updateRegion = (
+    id: string,
+    update: (region: StoredRegion) => StoredRegion,
+  ) => {
+    setRegions((current) =>
+      current.map((region) => (region.id === id ? update(region) : region)),
+    )
+  }
+
+  const renameRegion = async (region: StoredRegion) => {
+    const label = await promptDialog({
+      title: "Rename folder",
+      placeholder: "Folder name",
+      initial: region.label,
+    })
+    if (label === null) return
+    const trimmed = label.trim().slice(0, maximumRegionLabel)
+    if (trimmed) updateRegion(region.id, (current) => ({ ...current, label: trimmed }))
+  }
+
+  const setRegionFolder = async (region: StoredRegion) => {
+    const value = await promptDialog({
+      title: "Folder location",
+      message:
+        "Subfolder of the project (relative). New terminals in this folder start there. Leave empty for the project root.",
+      placeholder: "for example: docs/contracts",
+      initial: region.cwd ?? "",
+    })
+    if (value === null) return
+    const cwd = value.trim().replace(/\\/g, "/")
+    if (cwd.includes("..") || cwd.includes(":")) {
+      setNotice({ tone: "error", message: "The folder must stay inside the project" })
+      return
+    }
+    updateRegion(region.id, (current) => ({
+      ...current,
+      cwd: cwd || undefined,
+    }))
+  }
+
+  const dissolveRegion = async (region: StoredRegion) => {
+    const accepted = await confirmDialog({
+      title: "Dissolve folder",
+      message: `The panels inside "${region.label}" stay on the board; only the folder outline goes away.`,
+      confirmLabel: "Dissolve",
+    })
+    if (!accepted) return
+    clearGeometryHistory()
+    setRegions((current) => current.filter((item) => item.id !== region.id))
+    setNodes((current) =>
+      current.map((node) =>
+        node.regionId === region.id ? { ...node, regionId: undefined } : node,
+      ),
+    )
+  }
+
+  const beginRegionMove = (
+    event: ReactPointerEvent<HTMLElement>,
+    region: StoredRegion,
+  ) => {
+    if (event.button !== 0) return
+    if ((event.target as HTMLElement).closest("button,input")) return
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    clearGeometryHistory()
+    interactionRef.current = {
+      kind: "region-move",
+      pointerId: event.pointerId,
+      id: region.id,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: region.x,
+      startY: region.y,
+      zoom: viewportRef.current.zoom,
+      members: nodesRef.current
+        .filter((node) => node.regionId === region.id)
+        .map((node) => ({ id: node.id, startX: node.x, startY: node.y })),
+    }
+  }
+
+  const beginRegionResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+    region: StoredRegion,
+  ) => {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    clearGeometryHistory()
+    interactionRef.current = {
+      kind: "region-resize",
+      pointerId: event.pointerId,
+      id: region.id,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startWidth: region.width,
+      startHeight: region.height,
+      zoom: viewportRef.current.zoom,
+    }
+  }
+
+  // One-click masonry over the whole board; undoable like any other move.
+  const tidyAll = () => {
+    if (nodesRef.current.length === 0) return
+    pushGeometryHistory()
+    const rect = canvasRef.current?.getBoundingClientRect()
+    const canvasWidth =
+      (rect?.width ?? window.innerWidth) / viewportRef.current.zoom
+    const arranged = tidyLayout(nodesRef.current, canvasWidth)
+    setNodes((current) =>
+      current.map((node, index) => {
+        const position = arranged.get(index)
+        return position ? { ...node, x: position.x, y: position.y } : node
+      }),
+    )
+    window.requestAnimationFrame(() => zoomToNodes(nodesRef.current))
   }
 
   const closeZoomMenu = () => zoomDetailsRef.current?.removeAttribute("open")
@@ -1749,8 +2743,9 @@ function ProjectWorkspace({
     void action()
   }
 
-  const runWorkspaceMenuAction = (action: () => void) => () => {
+  const runWorkspaceMenuAction = (action: () => void, group?: string) => () => {
     setWorkspaceMenu(null)
+    if (group) recordMenuGroupUse(group)
     try {
       action()
       setCommandMessage("")
@@ -1796,7 +2791,11 @@ function ProjectWorkspace({
 
       const command = event.ctrlKey || event.metaKey
       let action: (() => void) | undefined
-      if (command && (event.key === "+" || event.key === "=")) {
+      if (command && !event.altKey && event.key.toLowerCase() === "z") {
+        action = event.shiftKey ? redoGeometry : undoGeometry
+      } else if (command && !event.altKey && event.key.toLowerCase() === "y") {
+        action = redoGeometry
+      } else if (command && (event.key === "+" || event.key === "=")) {
         action = () => zoomFromCenter(viewportRef.current.zoom + 0.1)
       } else if (command && event.key === "-") {
         action = () => zoomFromCenter(viewportRef.current.zoom - 0.1)
@@ -1811,6 +2810,7 @@ function ProjectWorkspace({
             if (selected) zoomToNodes([selected])
           }
         }
+        if (event.code === "Digit3") action = tidyAll
       }
 
       if (!action) return
@@ -1838,9 +2838,9 @@ function ProjectWorkspace({
             WindowToggleMaximise()
           }
         }}
-        className="pointer-events-none absolute inset-x-0 top-0 z-[70] flex h-14 items-center justify-between px-3 sm:px-4"
+        className="window-drag absolute inset-x-0 top-0 z-[70] flex h-14 items-center justify-between px-3 sm:px-4"
       >
-        <div className="window-drag pointer-events-auto flex min-w-0 items-center gap-2">
+        <div className="pointer-events-auto flex min-w-0 items-center gap-2">
           <details
             ref={projectMenuRef}
             className="window-no-drag relative"
@@ -1962,7 +2962,7 @@ function ProjectWorkspace({
             </p>
           </div>
         </div>
-        <div className="pointer-events-auto absolute left-1/2 top-2.5 -translate-x-1/2">
+        <div className="window-no-drag pointer-events-auto absolute left-1/2 top-2.5 -translate-x-1/2">
           <ProjectModeSelector value={projectMode} onChange={setProjectMode} />
         </div>
         <WindowControls className="pointer-events-auto" />
@@ -1978,6 +2978,13 @@ function ProjectWorkspace({
         onLostPointerCapture={endInteraction}
         onWheel={onCanvasWheel}
         onContextMenu={openWorkspaceMenu}
+        onScroll={(event) => {
+          // Focusing a panel below the fold makes the browser auto-scroll this
+          // overflow-hidden container, shearing the background layers. Panning
+          // is transform-based, so native scroll must always stay at 0.
+          event.currentTarget.scrollTop = 0
+          event.currentTarget.scrollLeft = 0
+        }}
         className={cn(
           "absolute inset-0 cursor-grab overflow-hidden outline-none active:cursor-grabbing",
           projectMode !== "workspace" && "invisible pointer-events-none",
@@ -1986,16 +2993,28 @@ function ProjectWorkspace({
           touchAction: "none",
         }}
       >
-        {workspaceBackground && (
-          <div
-            aria-hidden="true"
-            data-workspace-layer="image"
-            className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat"
-            style={{
-              backgroundImage: `url(${JSON.stringify(workspaceBackground)})`,
-            }}
-          />
-        )}
+        {workspaceBackground &&
+          (workspaceBackground.startsWith("data:") ? (
+            <div
+              aria-hidden="true"
+              data-workspace-layer="image"
+              className="pointer-events-none absolute inset-0 bg-cover bg-center bg-no-repeat"
+              style={{
+                backgroundImage: `url(${JSON.stringify(workspaceBackground)})`,
+              }}
+            />
+          ) : (
+            <video
+              aria-hidden="true"
+              data-workspace-layer="video"
+              className="pointer-events-none absolute inset-0 size-full object-cover"
+              src={workspaceBackground}
+              autoPlay
+              loop
+              muted
+              playsInline
+            />
+          ))}
         <div
           ref={gridFineRef}
           aria-hidden="true"
@@ -2045,6 +3064,49 @@ function ProjectWorkspace({
               : `translate3d(${viewportView.x}px, ${viewportView.y}px, 0) scale(${viewportView.zoom})`,
           }}
         >
+          {regions.map((region) => (
+            <RegionBox
+              key={region.id}
+              region={
+                regionOverrideRef.current?.id === region.id
+                  ? {
+                      ...region,
+                      x: regionOverrideRef.current.x ?? region.x,
+                      y: regionOverrideRef.current.y ?? region.y,
+                      width: regionOverrideRef.current.width ?? region.width,
+                      height: regionOverrideRef.current.height ?? region.height,
+                    }
+                  : region
+              }
+              hidden={maximizedID !== null}
+              memberCount={nodes.filter((node) => node.regionId === region.id).length}
+              regionRef={(element) => {
+                if (element) regionElsRef.current.set(region.id, element)
+                else regionElsRef.current.delete(region.id)
+              }}
+              onMove={(event) => beginRegionMove(event, region)}
+              onResize={(event) => beginRegionResize(event, region)}
+              onRename={() => void renameRegion(region)}
+              onCycleColor={() =>
+                updateRegion(region.id, (current) => ({
+                  ...current,
+                  color:
+                    noteColors[
+                      (noteColors.indexOf(current.color) + 1) % noteColors.length
+                    ],
+                }))
+              }
+              onSetFolder={() => void setRegionFolder(region)}
+              onTerminalHere={() => {
+                try {
+                  addTerminal("wsl", region)
+                } catch (error) {
+                  setNotice({ tone: "error", message: errorMessage(error) })
+                }
+              }}
+              onDissolve={() => void dissolveRegion(region)}
+            />
+          ))}
           {nodes.map((node) => (
             <WorkspacePanel
               key={node.id}
@@ -2066,6 +3128,7 @@ function ProjectWorkspace({
               selected={selectedID === node.id}
               maximized={maximizedID === node.id}
               obscured={maximizedID !== null && maximizedID !== node.id}
+              activity={agentActivity[node.id]}
               onSelect={() => bringToFront(node.id)}
               onMove={(event) => beginMove(event, node)}
               onMoveKeyboard={(x, y) =>
@@ -2152,12 +3215,62 @@ function ProjectWorkspace({
                     )
                   }
                 />
+              ) : node.type === "note" ? (
+                <NotePanel
+                  node={node}
+                  onChange={(text) =>
+                    updateNode(node.id, (current) =>
+                      current.type === "note" ? { ...current, text } : current,
+                    )
+                  }
+                  onCycleColor={() =>
+                    updateNode(node.id, (current) =>
+                      current.type === "note"
+                        ? {
+                            ...current,
+                            color:
+                              noteColors[
+                                (noteColors.indexOf(current.color) + 1) %
+                                  noteColors.length
+                              ],
+                          }
+                        : current,
+                    )
+                  }
+                />
+              ) : node.type === "todo" ? (
+                <TodoPanel
+                  node={node}
+                  onChange={(items) =>
+                    updateNode(node.id, (current) =>
+                      current.type === "todo" ? { ...current, items } : current,
+                    )
+                  }
+                />
+              ) : node.type === "document" ? (
+                <DocumentPanel
+                  url={workspaceAssetURL(project.id, node.assetId)}
+                  kind={node.kind}
+                  name={node.name}
+                />
               ) : (
                 <EditorPanel node={node} onRetry={() => retryEditor(node)} />
               )}
             </WorkspacePanel>
           ))}
         </div>
+
+        {droppingFiles && (
+          <div
+            aria-hidden="true"
+            className="overlay-in pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[var(--surface)]/60 backdrop-blur-[2px]"
+          >
+            <div className="flex items-center gap-3 rounded-full border border-[var(--focus-border)] bg-[var(--surface-container-high)] px-6 py-3 shadow-[0_1px_2px_var(--shadow-soft),0_8px_24px_var(--shadow-elevated)] backdrop-blur-xl">
+              <FileText className="size-4 text-[var(--primary)]" strokeWidth={1.7} />
+              <span className="text-sm font-medium">Drop to add · Suelta para añadir</span>
+            </div>
+          </div>
+        )}
 
         {!loaded && (
           <div className="overlay-in absolute inset-0 z-20 flex items-center justify-center bg-[var(--surface)]/70 text-xs text-[var(--on-surface-variant)] backdrop-blur-sm">
@@ -2167,18 +3280,35 @@ function ProjectWorkspace({
         )}
 
         {loaded && nodes.length === 0 && !workspaceMenu && (
-          <div className="view-enter pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 text-center">
-            <span className="flex size-12 items-center justify-center rounded-2xl bg-[var(--surface-container)] text-[var(--on-surface-variant)] shadow-[0_1px_3px_var(--shadow-soft)]">
-              <SquareTerminal className="size-5" strokeWidth={1.6} />
+          <div className="view-enter pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 text-center">
+            <span className="pointer-events-none flex size-12 items-center justify-center rounded-2xl bg-[var(--surface-container)] text-[var(--on-surface-variant)] shadow-[0_1px_3px_var(--shadow-soft)]">
+              <FileText className="size-5" strokeWidth={1.6} />
             </span>
-            <div>
+            <div className="pointer-events-none">
               <p className="text-sm font-semibold text-[var(--on-surface)]">
-                Your workspace is empty
+                This space is empty
               </p>
               <p className="mt-1 max-w-xs text-xs leading-5 text-[var(--on-surface-variant)]">
-                Right-click the canvas to add terminals, AI, browser, or music.
+                Drop a file here, or start with one of these.
               </p>
             </div>
+            <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 px-6">
+              <EmptyCanvasAction icon={FileText} disabled={photoBusy} onClick={() => void addDocument()}>
+                Open document
+              </EmptyCanvasAction>
+              <EmptyCanvasAction icon={StickyNote} onClick={() => addNote()}>
+                Note
+              </EmptyCanvasAction>
+              <EmptyCanvasAction icon={ListChecks} onClick={() => addTodo()}>
+                To-do list
+              </EmptyCanvasAction>
+              <EmptyCanvasAction icon={SquareTerminal} onClick={() => addTerminal("wsl")}>
+                Terminal
+              </EmptyCanvasAction>
+            </div>
+            <p className="pointer-events-none text-[0.65rem] text-[var(--on-surface-variant)]">
+              Right-click the canvas for everything else.
+            </p>
           </div>
         )}
 
@@ -2192,84 +3322,128 @@ function ProjectWorkspace({
             className="panel-in absolute z-[80] w-56 rounded-2xl border border-[var(--outline-variant)] bg-[var(--surface-container-high)] p-1.5 shadow-[0_14px_36px_var(--shadow-elevated)] outline-none backdrop-blur-2xl"
             style={{ left: workspaceMenu.x, top: workspaceMenu.y }}
           >
-            <WorkspaceSubmenu label="AI" side={workspaceMenu.submenuSide}>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("claude"))}>
-                <BrandChip brand="claude" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
-                Claude Code
-              </AddWorkspaceAction>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("codex"))}>
-                <BrandChip brand="codex" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
-                Codex
-              </AddWorkspaceAction>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("opencode"))}>
-                <BrandChip brand="opencode" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
-                OpenCode
-              </AddWorkspaceAction>
-            </WorkspaceSubmenu>
-            <WorkspaceSubmenu label="Terminals" side={workspaceMenu.submenuSide}>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("cmd"))}>
-                <MenuChip icon={SquareTerminal} />
-                CMD
-              </AddWorkspaceAction>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("wsl"))}>
-                <MenuChip icon={SquareTerminal} />
-                WSL
-              </AddWorkspaceAction>
-            </WorkspaceSubmenu>
-            <WorkspaceSubmenu label="Code editors" side={workspaceMenu.submenuSide}>
-              {editorIntegrations
-                .filter((editor) => editor.enabled)
-                .map((editor) => {
-                  const usable = editor.embedded || editor.available
-                  return (
+            {orderMenuGroups([
+              {
+                key: "documents",
+                element: (
+                  <WorkspaceSubmenu key="documents" label="Documents" side={workspaceMenu.submenuSide}>
                     <AddWorkspaceAction
-                      key={editor.id}
-                      disabled={!usable}
-                      title={
-                        usable
-                          ? `Open the project in ${editor.name} inside the workspace`
-                          : `${editor.name} is not installed on this computer`
-                      }
-                      onClick={
-                        usable
-                          ? runWorkspaceMenuAction(() => addEditor(editor))
-                          : undefined
-                      }
+                      disabled={photoBusy}
+                      onClick={runWorkspaceMenuAction(() => void addDocument(), "documents")}
                     >
-                      {brandGlyphs[editor.id] ? (
-                        <BrandChip brand={editor.id} className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
-                      ) : (
-                        <MenuChip icon={Pencil} />
-                      )}
-                      <span className="min-w-0 flex-1 truncate">{editor.name}</span>
-                      {!usable && (
-                        <span className="shrink-0 rounded-full bg-[var(--surface-container)] px-1.5 py-px text-[0.55rem] font-medium text-[var(--on-surface-variant)] shadow-[inset_0_0_0_1px_var(--outline-variant)]">
-                          Not installed
-                        </span>
-                      )}
+                      <MenuChip icon={FileText} />
+                      Document…
                     </AddWorkspaceAction>
-                  )
-                })}
-            </WorkspaceSubmenu>
-            <WorkspaceSubmenu label="Tools" side={workspaceMenu.submenuSide}>
-              <AddWorkspaceAction
-                onClick={runWorkspaceMenuAction(() => addBrowser(normalizeBrowserURL("")))}
-              >
-                <MenuChip icon={Globe2} />
-                Browser
-              </AddWorkspaceAction>
-              <AddWorkspaceAction onClick={runWorkspaceMenuAction(addPlayer)}>
-                <BrandChip brand="spotify" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
-                Spotify player
-              </AddWorkspaceAction>
-              <AddWorkspaceAction
-                disabled={photoBusy}
-                onClick={runWorkspaceMenuAction(addPhoto)}
-              >
-                <MenuChip icon={ImagePlus} />
-                Add photo
-              </AddWorkspaceAction>
-            </WorkspaceSubmenu>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addNote(), "documents")}>
+                      <MenuChip icon={StickyNote} />
+                      Note
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTodo(), "documents")}>
+                      <MenuChip icon={ListChecks} />
+                      To-do list
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction
+                      disabled={photoBusy}
+                      onClick={runWorkspaceMenuAction(addPhoto, "documents")}
+                    >
+                      <MenuChip icon={ImagePlus} />
+                      Photo
+                    </AddWorkspaceAction>
+                  </WorkspaceSubmenu>
+                ),
+              },
+              {
+                key: "ai",
+                element: (
+                  <WorkspaceSubmenu key="ai" label="AI" side={workspaceMenu.submenuSide}>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("claude"), "ai")}>
+                      <BrandChip brand="claude" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
+                      Claude Code
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("codex"), "ai")}>
+                      <BrandChip brand="codex" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
+                      Codex
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("opencode"), "ai")}>
+                      <BrandChip brand="opencode" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
+                      OpenCode
+                    </AddWorkspaceAction>
+                  </WorkspaceSubmenu>
+                ),
+              },
+              {
+                key: "terminals",
+                element: (
+                  <WorkspaceSubmenu key="terminals" label="Terminals" side={workspaceMenu.submenuSide}>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("cmd"), "terminals")}>
+                      <MenuChip icon={SquareTerminal} />
+                      CMD
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(() => addTerminal("wsl"), "terminals")}>
+                      <MenuChip icon={SquareTerminal} />
+                      WSL
+                    </AddWorkspaceAction>
+                  </WorkspaceSubmenu>
+                ),
+              },
+              {
+                key: "editors",
+                element: (
+                  <WorkspaceSubmenu key="editors" label="Code editors" side={workspaceMenu.submenuSide}>
+                    {editorIntegrations
+                      .filter((editor) => editor.enabled)
+                      .map((editor) => {
+                        const usable = editor.embedded || editor.available
+                        return (
+                          <AddWorkspaceAction
+                            key={editor.id}
+                            disabled={!usable}
+                            title={
+                              usable
+                                ? `Open the project in ${editor.name} inside the workspace`
+                                : `${editor.name} is not installed on this computer`
+                            }
+                            onClick={
+                              usable
+                                ? runWorkspaceMenuAction(() => addEditor(editor), "editors")
+                                : undefined
+                            }
+                          >
+                            {brandGlyphs[editor.id] ? (
+                              <BrandChip brand={editor.id} className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
+                            ) : (
+                              <MenuChip icon={Pencil} />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">{editor.name}</span>
+                            {!usable && (
+                              <span className="shrink-0 rounded-full bg-[var(--surface-container)] px-1.5 py-px text-[0.55rem] font-medium text-[var(--on-surface-variant)] shadow-[inset_0_0_0_1px_var(--outline-variant)]">
+                                Not installed
+                              </span>
+                            )}
+                          </AddWorkspaceAction>
+                        )
+                      })}
+                  </WorkspaceSubmenu>
+                ),
+              },
+              {
+                key: "tools",
+                element: (
+                  <WorkspaceSubmenu key="tools" label="Tools" side={workspaceMenu.submenuSide}>
+                    <AddWorkspaceAction
+                      onClick={runWorkspaceMenuAction(() => addBrowser(normalizeBrowserURL("")), "tools")}
+                    >
+                      <MenuChip icon={Globe2} />
+                      Browser
+                    </AddWorkspaceAction>
+                    <AddWorkspaceAction onClick={runWorkspaceMenuAction(addPlayer, "tools")}>
+                      <BrandChip brand="spotify" className="size-6 rounded-[0.45rem]" iconClassName="size-3.5" />
+                      Spotify player
+                    </AddWorkspaceAction>
+                  </WorkspaceSubmenu>
+                ),
+              },
+            ], menuGroupOrder).map((group) => group.element)}
           </div>
         )}
 
@@ -2360,6 +3534,13 @@ function ProjectWorkspace({
             >
               Fit selection
             </ZoomAction>
+            <ZoomAction
+              shortcut="⇧ 3"
+              disabled={nodes.length === 0}
+              onClick={runZoomAction(tidyAll)}
+            >
+              Tidy up
+            </ZoomAction>
           </div>
         </details>
       </div>
@@ -2445,6 +3626,8 @@ function ProjectWorkspace({
             {commandMessage}
             {showHelp && (
               <p className="mt-1">
+                <code>nota</code> · <code>tareas</code> · <code>abrir</code> ·{" "}
+                <code>ordenar</code> ·{" "}
                 <code>cmd</code> · <code>wsl</code> · <code>codex</code> ·{" "}
                 <code>claude</code> ·{" "}
                 <code>browser/navegador [url]</code> ·{" "}
@@ -2598,6 +3781,47 @@ function ProjectWorkspace({
         </aside>
       )}
 
+      {assistantActivity && projectMode === "workspace" && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="view-enter absolute bottom-[4.6rem] left-1/2 z-40 flex max-w-[min(26rem,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-full border border-[var(--outline-variant)] bg-[var(--surface-container-high)] px-4 py-1.5 text-[0.68rem] font-medium text-[var(--on-surface-variant)] shadow-[0_1px_2px_var(--shadow-soft),0_8px_24px_var(--shadow-elevated)] backdrop-blur-xl"
+        >
+          <span
+            aria-hidden="true"
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              assistantActivity.tone === "error"
+                ? "bg-[var(--error)]"
+                : "bg-[var(--success)]",
+            )}
+          />
+          <span className="truncate">{assistantActivity.message}</span>
+        </div>
+      )}
+
+      {showFirstRunHint && loaded && projectMode === "workspace" && (
+        <div className="view-enter absolute bottom-24 right-4 z-40 w-64 rounded-2xl border border-[var(--outline-variant)] bg-[var(--surface-container-high)] p-4 shadow-[0_1px_3px_var(--shadow-soft),0_16px_40px_var(--shadow-elevated)] backdrop-blur-2xl">
+          <p className="text-xs font-semibold tracking-[-0.01em]">
+            Welcome to your board
+          </p>
+          <ul className="mt-2 space-y-1.5 text-[0.68rem] leading-5 text-[var(--on-surface-variant)]">
+            <li>Drop any file here to open it.</li>
+            <li>Right-click for notes, to-dos, and more.</li>
+            <li>Drag panels around; Ctrl+Z undoes.</li>
+            <li>Ctrl+K searches and does everything.</li>
+          </ul>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-3 h-7 w-full rounded-full text-[0.68rem]"
+            onClick={dismissFirstRunHint}
+          >
+            Got it
+          </Button>
+        </div>
+      )}
+
       {notice && projectMode === "workspace" && (
         <div
           key={`${notice.tone}-${notice.message}`}
@@ -2742,6 +3966,7 @@ function WorkspacePanel({
   selected,
   maximized,
   obscured,
+  activity,
   onSelect,
   onMove,
   onMoveKeyboard,
@@ -2756,6 +3981,7 @@ function WorkspacePanel({
   selected: boolean
   maximized: boolean
   obscured: boolean
+  activity?: "working" | "waiting"
   onSelect: () => void
   onMove: (event: ReactPointerEvent<HTMLElement>) => void
   onMoveKeyboard: (x: number, y: number) => void
@@ -2778,6 +4004,7 @@ function WorkspacePanel({
     return () => window.clearTimeout(timeout)
   }, [maximized])
 
+
   const title = node.type === "terminal"
     ? terminalTitles[node.shell]
     : node.type === "browser"
@@ -2786,22 +4013,33 @@ function WorkspacePanel({
         ? "Spotify"
         : node.type === "photo"
           ? "Photo"
-          : editorTitles[node.editorId] ?? node.editorId
+          : node.type === "note"
+            ? "Note"
+            : node.type === "todo"
+              ? "To-do"
+              : node.type === "document"
+                ? node.name
+                : editorTitles[node.editorId] ?? node.editorId
 
   return (
     <article
       ref={panelRef}
       aria-label={`${title} panel`}
+      data-panel-type={node.type}
       onPointerDown={onSelect}
       className={cn(
-        "panel-in pointer-events-auto absolute left-0 top-0 flex flex-col overflow-hidden rounded-xl border bg-[var(--surface-container-high)] shadow-[0_12px_32px_var(--shadow-elevated)]",
+        "panel-in wobble-pop pointer-events-auto absolute left-0 top-0 flex flex-col overflow-hidden rounded-xl border bg-[var(--surface-container-high)] shadow-[0_12px_32px_var(--shadow-elevated)]",
         animatingGeometry &&
           "transition-[translate,width,height,border-radius] duration-300 ease-[cubic-bezier(.22,1,.36,1)]",
         obscured && "invisible pointer-events-none",
         maximized && "rounded-none",
         selected
           ? "border-[var(--focus-border)] ring-2 ring-[var(--focus-ring)]"
-          : "border-[var(--outline-variant)]",
+          : activity === "working"
+            ? "border-[var(--success)] ring-1 ring-[var(--success)]"
+            : activity === "waiting"
+              ? "border-[var(--warning)] ring-1 ring-[var(--warning)]"
+              : "border-[var(--outline-variant)]",
       )}
       style={{
         // translate (no left/top): moving the panel composites on the GPU without relayout
@@ -3497,6 +4735,448 @@ function editorExitMessage(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
+}
+
+const firstRunHintKey = "seizen-board-hint-dismissed"
+
+// Human phrases for the assistant activity strip; jargon-free by design.
+function assistantPhrase(tool: string): string | null {
+  if (tool === "seizen_project_context" || tool === "") return null
+  if (tool === "seizen_desk_open") return "The assistant opened something on your board"
+  if (tool === "seizen_desk_add_note") return "The assistant added a note"
+  if (tool === "seizen_desk_add_todo") return "The assistant added a checklist"
+  if (tool === "seizen_desk_tidy") return "The assistant tidied your board"
+  if (tool === "seizen_files_list") return "The assistant looked through your files"
+  if (tool === "seizen_files_move") return "The assistant moved a file"
+  if (tool === "seizen_files_rename") return "The assistant renamed a file"
+  if (tool.startsWith("seizen_experiment_")) return "The assistant is working on an experiment"
+  if (tool.startsWith("seizen_app_")) return "The assistant is working on the app"
+  if (tool.startsWith("seizen_server_")) return "The assistant is working on a server"
+  return null
+}
+
+const knownCommands = [
+  "cmd", "wsl", "codex", "claude", "opencode", "browser", "navegador",
+  "note", "nota", "todo", "tareas", "lista", "open", "abrir", "doc",
+  "documento", "tidy", "ordenar", "folder", "carpeta", "help", "ayuda",
+]
+
+// Nearest-verb hint: prefix/containment first, then a cheap edit distance for
+// one-typo cases ("noat" -> "nota"). Never a dead end.
+function suggestCommand(input: string): string | undefined {
+  if (!input) return undefined
+  const exact = knownCommands.find(
+    (candidate) => candidate.startsWith(input) || input.startsWith(candidate),
+  )
+  if (exact) return exact
+  let best: string | undefined
+  let bestDistance = 3
+  for (const candidate of knownCommands) {
+    if (Math.abs(candidate.length - input.length) >= bestDistance) continue
+    const distance = editDistance(input, candidate, bestDistance)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return best
+}
+
+function editDistance(a: string, b: string, cap: number) {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index)
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i]
+    let rowMinimum = i
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+      rowMinimum = Math.min(rowMinimum, current[j])
+    }
+    if (rowMinimum >= cap) return cap
+    previous = current
+  }
+  return previous[b.length]
+}
+
+function EmptyCanvasAction({
+  icon: Icon,
+  children,
+  ...props
+}: ComponentProps<"button"> & { icon: LucideIcon }) {
+  return (
+    <button
+      type="button"
+      className="flex h-9 items-center gap-2 rounded-full border border-[var(--outline-variant)] bg-[var(--surface-container-high)] px-4 text-xs font-medium text-[var(--on-surface)] shadow-[0_1px_3px_var(--shadow-soft)] outline-none transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:bg-[var(--surface-container)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-[0.97] disabled:cursor-default disabled:opacity-35"
+      {...props}
+    >
+      <Icon className="size-3.5 text-[var(--primary)]" strokeWidth={1.7} />
+      {children}
+    </button>
+  )
+}
+
+const menuGroupOrderKey = "seizen-add-menu-order"
+const defaultMenuGroupOrder = ["documents", "ai", "terminals", "editors", "tools"]
+
+function readMenuGroupOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(menuGroupOrderKey)
+    if (!raw) return defaultMenuGroupOrder
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed) || !parsed.every((key) => typeof key === "string")) {
+      return defaultMenuGroupOrder
+    }
+    const known = parsed.filter((key) => defaultMenuGroupOrder.includes(key))
+    return [
+      ...known,
+      ...defaultMenuGroupOrder.filter((key) => !known.includes(key)),
+    ]
+  } catch {
+    return defaultMenuGroupOrder
+  }
+}
+
+function orderMenuGroups<T extends { key: string }>(
+  groups: T[],
+  order: string[],
+): T[] {
+  return [...groups].sort((a, b) => {
+    const indexA = order.indexOf(a.key)
+    const indexB = order.indexOf(b.key)
+    return (indexA === -1 ? order.length : indexA) -
+      (indexB === -1 ? order.length : indexB)
+  })
+}
+
+const regionTints: Record<NoteColor, string> = {
+  default: "color-mix(in srgb, var(--on-surface) 4%, transparent)",
+  amber: "color-mix(in srgb, #e4bd7d 10%, transparent)",
+  emerald: "color-mix(in srgb, #9ccfb9 10%, transparent)",
+  violet: "color-mix(in srgb, #c6b5ed 10%, transparent)",
+  rose: "color-mix(in srgb, #e8a9b8 10%, transparent)",
+}
+
+// A canvas folder: a labeled rectangle that panels join by being dropped on it.
+// Dragging its header carries every member panel along.
+function RegionBox({
+  region,
+  hidden,
+  memberCount,
+  regionRef,
+  onMove,
+  onResize,
+  onRename,
+  onCycleColor,
+  onSetFolder,
+  onTerminalHere,
+  onDissolve,
+}: {
+  region: StoredRegion
+  hidden: boolean
+  memberCount: number
+  regionRef: (element: HTMLElement | null) => void
+  onMove: (event: ReactPointerEvent<HTMLElement>) => void
+  onResize: (event: ReactPointerEvent<HTMLButtonElement>) => void
+  onRename: () => void
+  onCycleColor: () => void
+  onSetFolder: () => void
+  onTerminalHere: () => void
+  onDissolve: () => void
+}) {
+  const action =
+    "flex size-6 items-center justify-center rounded-full text-[var(--on-surface-variant)] outline-none transition-colors hover:bg-[var(--state-layer)] hover:text-[var(--on-surface)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+  return (
+    <section
+      ref={regionRef}
+      aria-label={`Folder ${region.label}`}
+      className={cn(
+        "pointer-events-auto absolute left-0 top-0 rounded-2xl border border-dashed border-[var(--outline-variant)]",
+        hidden && "invisible",
+      )}
+      style={{
+        translate: `${region.x}px ${region.y}px`,
+        width: region.width,
+        height: region.height,
+        zIndex: 0,
+        background: regionTints[region.color] ?? regionTints.default,
+      }}
+    >
+      <div
+        onPointerDown={onMove}
+        className="group flex h-8 cursor-move items-center gap-1.5 px-2"
+      >
+        <FolderOpen className="size-3.5 shrink-0 text-[var(--on-surface-variant)]" strokeWidth={1.7} />
+        <span className="min-w-0 truncate text-[0.68rem] font-semibold tracking-[-0.01em] text-[var(--on-surface)]">
+          {region.label}
+        </span>
+        {region.cwd && (
+          <span
+            title={`New terminals start in ${region.cwd}`}
+            className="min-w-0 truncate rounded-full bg-[var(--surface-container)] px-1.5 py-px text-[0.55rem] font-medium text-[var(--on-surface-variant)] shadow-[inset_0_0_0_1px_var(--outline-variant)]"
+          >
+            /{region.cwd}
+          </span>
+        )}
+        <span className="text-[0.6rem] tabular-nums text-[var(--on-surface-variant)]">
+          {memberCount > 0 ? memberCount : ""}
+        </span>
+        <span className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label={`New terminal in ${region.label}`} onClick={onTerminalHere} className={action}>
+                <SquareTerminal className="size-3.5" strokeWidth={1.7} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">New terminal here</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label={`Set folder location for ${region.label}`} onClick={onSetFolder} className={action}>
+                <FolderOpen className="size-3.5" strokeWidth={1.7} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Folder location</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label={`Change color of ${region.label}`} onClick={onCycleColor} className={action}>
+                <Palette className="size-3.5" strokeWidth={1.7} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Color</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label={`Rename ${region.label}`} onClick={onRename} className={action}>
+                <Pencil className="size-3.5" strokeWidth={1.7} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Rename</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={`Dissolve ${region.label}`}
+                onClick={onDissolve}
+                className={cn(action, "hover:bg-[var(--error)] hover:text-white")}
+              >
+                <X className="size-3.5" strokeWidth={1.9} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">Dissolve</TooltipContent>
+          </Tooltip>
+        </span>
+      </div>
+      <button
+        type="button"
+        aria-label={`Resize folder ${region.label}`}
+        title="Resize"
+        onPointerDown={onResize}
+        className="absolute bottom-0 right-0 size-6 cursor-se-resize rounded-tl-xl outline-none after:absolute after:bottom-1.5 after:right-1.5 after:size-2.5 after:border-b-2 after:border-r-2 after:border-[var(--on-surface-variant)] hover:bg-[var(--state-layer)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+      />
+    </section>
+  )
+}
+
+const noteSurfaces: Record<NoteColor, string> = {
+  default: "var(--surface-container-high)",
+  amber: "color-mix(in srgb, #e4bd7d 18%, var(--surface-container-high))",
+  emerald: "color-mix(in srgb, #9ccfb9 18%, var(--surface-container-high))",
+  violet: "color-mix(in srgb, #c6b5ed 18%, var(--surface-container-high))",
+  rose: "color-mix(in srgb, #e8a9b8 18%, var(--surface-container-high))",
+}
+
+// Tiny markdown renderer for note view mode: headings, lists, checkboxes, bold,
+// italic, and inline code. Input is escaped first, so nothing executes.
+function renderNoteMarkdown(text: string) {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+  const inline = (line: string) =>
+    line
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+  const lines = escaped.split("\n").map((line) => {
+    if (line.startsWith("### ")) return `<h3>${inline(line.slice(4))}</h3>`
+    if (line.startsWith("## ")) return `<h2>${inline(line.slice(3))}</h2>`
+    if (line.startsWith("# ")) return `<h1>${inline(line.slice(2))}</h1>`
+    const task = /^[-*] \[([ xX])\] (.*)$/.exec(line)
+    if (task) {
+      const checked = task[1] !== " "
+      return `<p class="note-task${checked ? " note-task-done" : ""}">${
+        checked ? "☑" : "☐"
+      } ${inline(task[2])}</p>`
+    }
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      return `<p class="note-bullet">• ${inline(line.slice(2))}</p>`
+    }
+    if (!line.trim()) return "<br/>"
+    return `<p>${inline(line)}</p>`
+  })
+  return lines.join("")
+}
+
+function NotePanel({
+  node,
+  onChange,
+  onCycleColor,
+}: {
+  node: NoteNode
+  onChange: (text: string) => void
+  onCycleColor: () => void
+}) {
+  const [editing, setEditing] = useState(() => node.text.trim() === "")
+
+  return (
+    <div
+      className="flex size-full min-h-0 flex-col"
+      style={{ background: noteSurfaces[node.color] ?? noteSurfaces.default }}
+    >
+      <div className="flex h-8 shrink-0 items-center justify-end gap-1 px-2">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Change note color"
+              onClick={onCycleColor}
+              className="flex size-6 items-center justify-center rounded-full text-[var(--on-surface-variant)] outline-none transition-colors hover:bg-[var(--state-layer)] hover:text-[var(--on-surface)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+            >
+              <Palette className="size-3.5" strokeWidth={1.7} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Color</TooltipContent>
+        </Tooltip>
+        <button
+          type="button"
+          aria-pressed={!editing}
+          onClick={() => setEditing((current) => !current)}
+          className="flex h-6 items-center rounded-full bg-[var(--surface-container)] px-2.5 text-[0.62rem] font-medium text-[var(--on-surface-variant)] shadow-[inset_0_0_0_1px_var(--outline-variant)] outline-none transition-colors hover:text-[var(--on-surface)] focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        >
+          {editing ? "View" : "Edit"}
+        </button>
+      </div>
+      {editing ? (
+        <textarea
+          value={node.text}
+          maxLength={maximumNoteCharacters}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Write a note… Markdown works: # heading, - list, - [ ] task"
+          aria-label="Note text"
+          className="min-h-0 flex-1 resize-none bg-transparent px-3 pb-3 text-sm leading-6 text-[var(--on-surface)] outline-none placeholder:text-[var(--on-surface-variant)]"
+        />
+      ) : (
+        <div
+          aria-label="Note preview"
+          onDoubleClick={() => setEditing(true)}
+          className="note-preview min-h-0 flex-1 select-text overflow-y-auto px-3 pb-3 text-sm leading-6"
+          dangerouslySetInnerHTML={{ __html: renderNoteMarkdown(node.text) }}
+        />
+      )}
+    </div>
+  )
+}
+
+function TodoPanel({
+  node,
+  onChange,
+}: {
+  node: TodoNode
+  onChange: (items: TodoItem[]) => void
+}) {
+  const [draft, setDraft] = useState("")
+  const done = node.items.filter((item) => item.done).length
+
+  const addItem = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const text = draft.trim().slice(0, maximumTodoItemCharacters)
+    if (!text || node.items.length >= maximumTodoItems) return
+    onChange([...node.items, { id: workspaceID("item"), text, done: false }])
+    setDraft("")
+  }
+
+  return (
+    <div className="flex size-full min-h-0 flex-col bg-[var(--surface-container-high)]">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {node.items.length === 0 && (
+          <p className="px-2 py-3 text-center text-xs text-[var(--on-surface-variant)]">
+            Nothing yet. Add your first task below.
+          </p>
+        )}
+        {node.items.map((item) => (
+          <div
+            key={item.id}
+            className="group flex items-center gap-2.5 rounded-xl px-2 py-1.5 transition-colors hover:bg-[var(--state-layer)]"
+          >
+            <input
+              type="checkbox"
+              checked={item.done}
+              aria-label={item.text}
+              onChange={() =>
+                onChange(
+                  node.items.map((candidate) =>
+                    candidate.id === item.id
+                      ? { ...candidate, done: !candidate.done }
+                      : candidate,
+                  ),
+                )
+              }
+              className="size-4 shrink-0 accent-[var(--primary)]"
+            />
+            <span
+              className={cn(
+                "min-w-0 flex-1 break-words text-xs leading-5",
+                item.done && "text-[var(--on-surface-variant)] line-through",
+              )}
+            >
+              {item.text}
+            </span>
+            <button
+              type="button"
+              aria-label={`Remove ${item.text}`}
+              onClick={() =>
+                onChange(node.items.filter((candidate) => candidate.id !== item.id))
+              }
+              className="flex size-6 shrink-0 items-center justify-center rounded-full text-[var(--on-surface-variant)] opacity-0 outline-none transition-opacity hover:bg-[var(--error)] hover:text-white focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-[var(--ring)] group-hover:opacity-100"
+            >
+              <X className="size-3" strokeWidth={2} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <form
+        onSubmit={addItem}
+        className="flex h-11 shrink-0 items-center gap-2 border-t border-[var(--outline-variant)] px-3"
+      >
+        <input
+          value={draft}
+          maxLength={maximumTodoItemCharacters}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="Add a task"
+          aria-label="New task"
+          className="h-8 min-w-0 flex-1 bg-transparent text-xs text-[var(--on-surface)] outline-none placeholder:text-[var(--on-surface-variant)]"
+        />
+        {node.items.length > 0 && (
+          <span className="shrink-0 text-[0.62rem] tabular-nums text-[var(--on-surface-variant)]">
+            {done}/{node.items.length}
+          </span>
+        )}
+        <button
+          type="submit"
+          aria-label="Add task"
+          disabled={!draft.trim() || node.items.length >= maximumTodoItems}
+          className="flex size-7 shrink-0 items-center justify-center rounded-full text-[var(--on-surface-variant)] outline-none transition-colors hover:bg-[var(--state-layer)] hover:text-[var(--on-surface)] focus-visible:ring-2 focus-visible:ring-[var(--ring)] disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          <Plus className="size-4" strokeWidth={2} />
+        </button>
+      </form>
+    </div>
+  )
 }
 
 function workspaceID(prefix: string) {

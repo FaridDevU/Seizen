@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,14 +105,41 @@ func newTerminalManager(emit func(string, any)) *terminalManager {
 }
 
 func (a *App) StartProjectTerminal(projectID, path, shell string) (string, error) {
-	return a.startProjectTerminal(projectID, "", path, shell)
+	return a.startProjectTerminal(projectID, "", path, shell, "")
+}
+
+// containedSubfolder resolves a project-relative subfolder and refuses anything
+// that escapes the root; a subfolder that no longer exists falls back to root.
+func containedSubfolder(root, subfolder string) (string, error) {
+	subfolder = strings.TrimSpace(subfolder)
+	if subfolder == "" {
+		return root, nil
+	}
+	joined := filepath.Join(root, filepath.FromSlash(subfolder))
+	relative, err := filepath.Rel(root, joined)
+	if err != nil || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", errors.New("the folder is outside the project")
+	}
+	resolved, err := existingDirectory(joined)
+	if err != nil {
+		return root, nil // ponytail: deleted subfolder degrades to the project root
+	}
+	return resolved, nil
 }
 
 func (a *App) StartProjectTerminalContext(projectID, experimentID, shell string) (string, error) {
-	return a.startProjectTerminal(projectID, experimentID, "", shell)
+	return a.startProjectTerminal(projectID, experimentID, "", shell, "")
 }
 
-func (a *App) startProjectTerminal(projectID, experimentID, requestedPath, shell string) (string, error) {
+// StartProjectTerminalInFolder opens a terminal whose working directory is a
+// subfolder of the project (used by canvas folders). The subfolder is always
+// contained to the project root; a missing subfolder falls back to the root.
+func (a *App) StartProjectTerminalInFolder(projectID, experimentID, shell, subfolder string) (string, error) {
+	return a.startProjectTerminal(projectID, experimentID, "", shell, subfolder)
+}
+
+func (a *App) startProjectTerminal(projectID, experimentID, requestedPath, shell, subfolder string) (string, error) {
 	if shell == "codex" || shell == "claude" || shell == "opencode" {
 		return a.startProjectAgentTerminal(projectID, experimentID, requestedPath, shell, "")
 	}
@@ -130,6 +159,10 @@ func (a *App) startProjectTerminal(projectID, experimentID, requestedPath, shell
 		return "", errors.New("the given path does not match the project's saved path")
 	}
 	folder, err := existingDirectory(storedPath)
+	if err != nil {
+		return "", err
+	}
+	folder, err = containedSubfolder(folder, subfolder)
 	if err != nil {
 		return "", err
 	}

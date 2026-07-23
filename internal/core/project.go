@@ -37,6 +37,8 @@ type Project struct {
 	GroupID      *string       `json:"groupId"`
 	GroupTitle   *string       `json:"groupTitle"`
 	VariantLabel *string       `json:"variantLabel"`
+	// Missing is computed at list time (not stored): the project's folder is gone from disk.
+	Missing bool `json:"missing"`
 }
 
 type FSProjectInfo struct {
@@ -92,6 +94,8 @@ ORDER BY favorite DESC, updated_at DESC, LOWER(name)`, term, term, term)
 		if scanErr != nil {
 			return nil, fmt.Errorf("could not read a project: %w", scanErr)
 		}
+		// ponytail: O(n) stat over a personal-size library — fine; batch/cache if it grows.
+		project.Missing = !directoryExists(project.Path)
 		projects = append(projects, project)
 	}
 	if err = rows.Err(); err != nil {
@@ -101,7 +105,7 @@ ORDER BY favorite DESC, updated_at DESC, LOWER(name)`, term, term, term)
 }
 
 func (a *App) CreateProject(name string) (Project, error) {
-	root, err := a.GetProjectRoot()
+	root, err := a.vaultRoot()
 	if err != nil {
 		return Project{}, err
 	}
@@ -109,6 +113,7 @@ func (a *App) CreateProject(name string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	_ = protectFolder(info.Path) // Best-effort; the project is usable without the guard.
 	project, err := a.saveProject(info, ProjectCreated)
 	if err != nil {
 		return Project{}, fmt.Errorf("the folder was created at %s, but it could not be saved to the library; you can import it later: %w", info.Path, err)
@@ -120,16 +125,37 @@ func (a *App) ImportProjects(paths []string) ([]Project, error) {
 	if len(paths) == 0 {
 		return []Project{}, nil
 	}
+	// A cancellable context so CancelImport can stop a long copy midway.
+	ctx, cancel := context.WithCancel(a.context())
+	a.mu.Lock()
+	if a.importCancel != nil {
+		a.mu.Unlock()
+		cancel()
+		return nil, errors.New("an import is already in progress")
+	}
+	a.importCancel = cancel
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.importCancel = nil
+		a.mu.Unlock()
+		cancel()
+	}()
+
+	// Copy each folder into the vault first (slow, no DB lock held), then record the
+	// managed copies. The original folders are never touched.
 	infos := make([]FSProjectInfo, len(paths))
 	for index, path := range paths {
-		info, err := inspectProjectPath(path)
+		info, err := a.importIntoVault(ctx, path)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, errors.New("import canceled")
+			}
 			return nil, err
 		}
 		infos[index] = info
 	}
 
-	ctx := a.context()
 	pool, err := a.database.Pool(ctx)
 	if err != nil {
 		return nil, err
@@ -154,8 +180,18 @@ func (a *App) ImportProjects(paths []string) ([]Project, error) {
 	return projects, nil
 }
 
+// CancelImport stops an in-progress import copy. The partial vault copy is cleaned up.
+func (a *App) CancelImport() {
+	a.mu.Lock()
+	cancel := a.importCancel
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (a *App) CloneRepository(url string) (Project, error) {
-	root, err := a.GetProjectRoot()
+	root, err := a.vaultRoot()
 	if err != nil {
 		return Project{}, err
 	}
@@ -163,6 +199,7 @@ func (a *App) CloneRepository(url string) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	_ = protectFolder(info.Path) // Best-effort; the project is usable without the guard.
 	project, err := a.saveProject(info, ProjectGit)
 	if err != nil {
 		return Project{}, fmt.Errorf("the repository was cloned at %s, but it could not be saved to the library; you can import it later: %w", info.Path, err)
@@ -171,10 +208,14 @@ func (a *App) CloneRepository(url string) (Project, error) {
 }
 
 func (a *App) RenameProject(id, path, newName string) (Project, error) {
+	// The delete guard also blocks renaming the folder, so lift it around the rename.
+	a.unguardVaultFolder(path)
 	info, previousName, err := renameProjectDirectory(path, newName)
 	if err != nil {
+		a.guardVaultFolder(path)
 		return Project{}, err
 	}
+	a.guardVaultFolder(info.Path)
 
 	ctx := a.context()
 	pool, databaseErr := a.database.Pool(ctx)
@@ -193,7 +234,9 @@ RETURNING `+projectColumns, info.Name, info.Path, info.GitRemote, info.Branch, i
 		}
 	}
 
+	a.unguardVaultFolder(info.Path)
 	_, _, rollbackErr := renameProjectDirectory(info.Path, previousName)
+	a.guardVaultFolder(path)
 	if rollbackErr != nil {
 		return Project{}, fmt.Errorf("could not update the library or restore the name: %v · %v", databaseErr, rollbackErr)
 	}
@@ -219,7 +262,7 @@ func (a *App) deleteProject(id, path string, removeFiles bool) error {
 	// so any pool query while the transaction is open deadlocks.
 	var root string
 	if removeFiles {
-		if root, err = a.GetProjectRoot(); err != nil {
+		if root, err = a.vaultRoot(); err != nil {
 			return err
 		}
 	}
@@ -241,8 +284,13 @@ func (a *App) deleteProject(id, path string, removeFiles bool) error {
 	if !sameRequestedPath(storedPath, path) {
 		return errors.New("the given path does not match the project's saved path")
 	}
-	if removeFiles && ProjectSource(source) == ProjectImported {
-		return errors.New("an imported project cannot be permanently deleted")
+	// Only vault copies are ever removed from disk. A project that points outside the
+	// vault (a legacy external import) or whose folder is already gone is only unlinked
+	// from the library, never touched on disk.
+	if removeFiles {
+		if resolved, resolveErr := canonicalPath(storedPath); resolveErr != nil || !within(root, resolved) {
+			removeFiles = false
+		}
 	}
 	var serverCount, activeAppCount int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE project_id = ?`, id).Scan(&serverCount); err != nil {
@@ -273,7 +321,9 @@ AND status IN ('starting', 'running', 'testing', 'stopping')`, id).Scan(&activeA
 	// If the row deletion fails after the folder has been moved, it must be restored.
 	fail := func(cause error) error {
 		if removeFiles {
-			return rollbackProjectDeletion(tx, quarantine, projectPath, cause)
+			restored := rollbackProjectDeletion(tx, quarantine, projectPath, cause)
+			_ = protectFolder(projectPath) // Re-guard the folder if it was restored.
+			return restored
 		}
 		return cause
 	}
@@ -283,7 +333,9 @@ AND status IN ('starting', 'running', 'testing', 'stopping')`, id).Scan(&activeA
 		terminals.stopProject(id)
 	}
 	if removeFiles {
+		_ = unprotectFolder(projectPath) // Lift the delete guard so the move can proceed.
 		if err = os.Rename(projectPath, quarantine); err != nil {
+			_ = protectFolder(projectPath) // Restore the guard if the move failed.
 			return fmt.Errorf("could not prepare the folder for deletion: %w", err)
 		}
 	}
@@ -321,6 +373,9 @@ WHERE group_id = ? AND (SELECT COUNT(*) FROM projects WHERE group_id = ?) = 1`, 
 	}
 	if err = a.removeProjectWorkspacePhotos(id); err != nil {
 		return fmt.Errorf("the project was deleted, but its photos could not be deleted: %w", err)
+	}
+	if err = a.removeProjectWorkspaceAssets(id); err != nil {
+		return fmt.Errorf("the project was deleted, but its documents could not be deleted: %w", err)
 	}
 	return nil
 }
@@ -657,6 +712,11 @@ func existingDirectory(path string) (string, error) {
 		return "", errors.New("the path must point to a folder")
 	}
 	return path, nil
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func canonicalPath(path string) (string, error) {
