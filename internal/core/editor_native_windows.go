@@ -105,7 +105,20 @@ func (a *App) StartNativeEditor(projectPath, id string) (EditorSession, error) {
 		return EditorSession{}, err
 	}
 
-	window := waitForNewEditorWindow(exe, before)
+	// Single-instance editors (Zed) may add the project to an existing window
+	// instead of opening a new one: wait briefly for a new window, then fall
+	// back to tracking the one that is already there.
+	timeout := nativeEditorFindTimeout
+	if len(before) > 0 {
+		timeout = 4 * time.Second
+	}
+	window := waitForNewEditorWindow(exe, before, timeout)
+	if window == 0 {
+		for existing := range visibleWindowsForExe(exe) {
+			window = existing
+			break
+		}
+	}
 	if window == 0 {
 		return EditorSession{}, fmt.Errorf("%s started but its window did not appear; check the taskbar and retry", definition.Name)
 	}
@@ -195,8 +208,8 @@ func (manager *nativeEditorManager) close() {
 	manager.mu.Unlock()
 }
 
-func waitForNewEditorWindow(exe string, before map[uintptr]bool) uintptr {
-	deadline := time.Now().Add(nativeEditorFindTimeout)
+func waitForNewEditorWindow(exe string, before map[uintptr]bool, timeout time.Duration) uintptr {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		for window := range visibleWindowsForExe(exe) {
 			if !before[window] {

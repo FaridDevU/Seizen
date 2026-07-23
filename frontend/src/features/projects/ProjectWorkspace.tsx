@@ -2350,6 +2350,12 @@ function ProjectWorkspace({
       return task ? `${shell}: ${task.slice(0, 40)}` : `${shell} terminal`
     }
     if (action.name === "open_editor") return `Editor: ${String(input.editor ?? "")}`
+    if (action.name === "close_panels") {
+      const count = Number(input.count) || 0
+      return count > 0
+        ? `Closed ${count} ${String(input.type ?? "panel")}${count > 1 ? "s" : ""}`
+        : `Closed ${String(input.type ?? "panel")}s`
+    }
     if (action.name === "add_note") return "Note added"
     if (action.name === "add_todo") return "Checklist added"
     if (action.name === "open_browser") return "Browser opened"
@@ -2380,9 +2386,36 @@ function ProjectWorkspace({
       } else {
         setNotice({ tone: "error", message: `${input.editor} is not installed here` })
       }
+    } else if (action.name === "close_panels") {
+      const type = typeof input.type === "string" ? input.type : "terminal"
+      const shell = typeof input.shell === "string" ? input.shell : ""
+      const matches = nodesRef.current.filter((node) => {
+        if (type === "all") return true
+        if (node.type !== type) return false
+        if (node.type === "terminal" && shell) {
+          if (shell === "ai") {
+            return node.shell === "claude" || node.shell === "codex" || node.shell === "opencode"
+          }
+          return node.shell === shell
+        }
+        return true
+      })
+      const count = Math.min(Number(input.count) || matches.length, matches.length)
+      // Newest first: "close 4 terminals" retires the most recent ones.
+      for (const node of matches.slice(-count)) closeNode(node.id)
     } else if (action.name === "tidy") {
       tidyAll()
     }
+  }
+
+  // One line the model can read: what is on the board right now.
+  const boardSummary = () => {
+    const parts = nodesRef.current.map((node) =>
+      node.type === "terminal"
+        ? `terminal(${node.shell}${node.taskHint ? `: ${node.taskHint}` : ""})`
+        : node.type,
+    )
+    return parts.join(", ") || "(empty)"
   }
 
   const runWorkspaceAssistant = async (prompt: string) => {
@@ -2393,7 +2426,12 @@ function ProjectWorkspace({
     setCommand("")
     document.documentElement.dataset.aiActive = "on"
     try {
-      const reply = await AskWorkspaceAssistant(project.id, workspaceChatId, prompt)
+      const reply = await AskWorkspaceAssistant(
+        project.id,
+        workspaceChatId,
+        prompt,
+        boardSummary(),
+      )
       setWorkspaceChatId(reply.chatId)
       const chips = (reply.actions ?? []).map(workspaceActionChip)
       if (reply.text || chips.length > 0) {

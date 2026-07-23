@@ -54,6 +54,15 @@ var workspaceAssistantTools = []anthropic.ToolUnionParam{
 		}},
 	}},
 	{OfTool: &anthropic.ToolParam{
+		Name:        "close_panels",
+		Description: anthropic.String("Close panels on the board (the current panels are listed in the system prompt). shell 'ai' means any agent terminal (claude/codex)."),
+		InputSchema: anthropic.ToolInputSchemaParam{Properties: map[string]any{
+			"type":  map[string]any{"type": "string", "enum": []string{"terminal", "note", "todo", "browser", "editor", "document", "all"}},
+			"shell": map[string]any{"type": "string", "enum": []string{"ai", "claude", "codex", "cmd", "wsl"}, "description": "Only for type=terminal: which terminals to close."},
+			"count": map[string]any{"type": "integer", "description": "How many to close. Omit to close all matches."},
+		}},
+	}},
+	{OfTool: &anthropic.ToolParam{
 		Name:        "tidy",
 		Description: anthropic.String("Arrange the board's panels neatly."),
 		InputSchema: anthropic.ToolInputSchemaParam{Properties: map[string]any{}},
@@ -90,8 +99,9 @@ Top-level contents of the project folder:
 }
 
 // AskWorkspaceAssistant handles one turn of the project command bar's chat.
-// chatID "" starts a new chat for this project.
-func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt string) (AssistantChatReply, error) {
+// chatID "" starts a new chat for this project. board is the frontend's
+// one-line summary of the panels currently on the workspace.
+func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt, board string) (AssistantChatReply, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return AssistantChatReply{}, errors.New("empty prompt")
@@ -110,6 +120,9 @@ func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt string) (Assistant
 		return AssistantChatReply{}, errors.New("unknown project")
 	}
 	system := workspaceAssistantPrompt(name, path)
+	if board = strings.TrimSpace(board); board != "" {
+		system += "\nPanels currently on the board: " + board + "\n"
+	}
 	if integrations, integrationsErr := a.GetEditorIntegrations(); integrationsErr == nil {
 		installed := []string{}
 		for _, editor := range integrations {
