@@ -120,6 +120,12 @@ func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt, board string) (As
 		return AssistantChatReply{}, errors.New("unknown project")
 	}
 	system := workspaceAssistantPrompt(name, path)
+	provider := config.provider()
+	if provider == "claude-cli" || provider == "codex-cli" {
+		system += `
+You also have direct read-only access to the project's files (your working directory is the project folder; use your Read/Glob/Grep tools). For analysis questions ("what does this project do", "where is X handled"), read the code yourself and answer in the chat — no terminal needed. Delegate to terminals only for work that changes files or takes long.
+`
+	}
 	if board = strings.TrimSpace(board); board != "" {
 		system += "\nPanels currently on the board: " + board + "\n"
 	}
@@ -135,5 +141,5 @@ func (a *App) AskWorkspaceAssistant(projectID, chatID, prompt, board string) (As
 				strings.Join(installed, ", ") + "\n"
 		}
 	}
-	return a.runAssistantTurn(config, chatID, prompt, name, system, workspaceAssistantTools)
+	return a.runAssistantTurn(config, chatID, prompt, name, system, workspaceAssistantTools, path)
 }

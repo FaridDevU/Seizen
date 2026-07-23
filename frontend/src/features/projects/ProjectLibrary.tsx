@@ -14,6 +14,7 @@ import {
   CircleAlert,
   CloudUpload,
   CopyPlus,
+  Download,
   Folder,
   FolderGit2,
   FolderInput,
@@ -617,6 +618,13 @@ function ProjectLibrary({
       })
     })
 
+  // The way out of the protected vault: a plain ZIP wherever the user picks.
+  const downloadProject = (project: Project) =>
+    void run(`export-${project.id}`, async () => {
+      const saved = await projectService.exportProject(project)
+      if (saved) setNotice({ tone: "success", message: `ZIP saved: ${saved}` })
+    })
+
   const groupDuplicate = (group: DuplicateGroup) =>
     void run(`group-${group.key}`, async () => {
       await projectService.groupDuplicate(group)
@@ -972,6 +980,7 @@ function ProjectLibrary({
                     onRename={() => openModal("rename", item.project)}
                     onGitHub={() => openModal("github", item.project)}
                     onBackup={() => openModal("backup", item.project)}
+                    onDownload={() => downloadProject(item.project)}
                     onArchive={() => toggleArchive(item.project)}
                     onDelete={() => openModal("delete", item.project)}
                   />
@@ -1013,6 +1022,7 @@ function ProjectLibrary({
                           onRename={() => openModal("rename", project)}
                           onGitHub={() => openModal("github", project)}
                           onBackup={() => openModal("backup", project)}
+                          onDownload={() => downloadProject(project)}
                           onArchive={() => toggleArchive(project)}
                           onDelete={() => openModal("delete", project)}
                         />
@@ -1511,6 +1521,7 @@ function ProjectCard({
   onRename,
   onGitHub,
   onBackup,
+  onDownload,
   onArchive,
   onDelete,
 }: {
@@ -1522,6 +1533,7 @@ function ProjectCard({
   onRename: () => void
   onGitHub: () => void
   onBackup: () => void
+  onDownload: () => void
   onArchive: () => void
   onDelete: () => void
 }) {
@@ -1607,6 +1619,7 @@ function ProjectCard({
             onRename={onRename}
             onGitHub={onGitHub}
             onBackup={onBackup}
+            onDownload={onDownload}
             onArchive={onArchive}
             onDelete={onDelete}
           />
@@ -1626,6 +1639,7 @@ function ProjectRow({
   onRename,
   onGitHub,
   onBackup,
+  onDownload,
   onArchive,
   onDelete,
 }: {
@@ -1638,6 +1652,7 @@ function ProjectRow({
   onRename: () => void
   onGitHub: () => void
   onBackup: () => void
+  onDownload: () => void
   onArchive: () => void
   onDelete: () => void
 }) {
@@ -1731,6 +1746,7 @@ function ProjectRow({
           onRename={onRename}
           onGitHub={onGitHub}
           onBackup={onBackup}
+          onDownload={onDownload}
           onArchive={onArchive}
           onDelete={onDelete}
         />
@@ -1745,6 +1761,7 @@ function ProjectActions({
   onRename,
   onGitHub,
   onBackup,
+  onDownload,
   onArchive,
   onDelete,
 }: {
@@ -1753,6 +1770,7 @@ function ProjectActions({
   onRename: () => void
   onGitHub: () => void
   onBackup: () => void
+  onDownload: () => void
   onArchive: () => void
   onDelete: () => void
 }) {
@@ -1813,6 +1831,10 @@ function ProjectActions({
         >
           <CloudUpload className="size-3.5" />
           Create backup
+        </MenuAction>
+        <MenuAction onClick={act(onDownload)}>
+          <Download className="size-3.5" />
+          Download ZIP
         </MenuAction>
         <MenuAction onClick={act(onRename)}>
           <Pencil className="size-3.5" />

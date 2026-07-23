@@ -1207,6 +1207,23 @@ function ProjectWorkspace({
             : `The agent finished its work in ${project.name}`,
         )
       }
+      // A delegated task ended: close the loop in the chat that launched it.
+      if (exited?.type === "terminal" && exited.taskHint) {
+        setWsChatMessages((messages) => [
+          ...messages,
+          payload.error
+            ? {
+                role: "assistant",
+                content: `The task "${exited.taskHint}" stopped with an error.`,
+                error: true,
+              }
+            : {
+                role: "assistant",
+                content: `Task finished: "${exited.taskHint}" — its results note should be on the board.`,
+                chips: ["✓ done"],
+              },
+        ])
+      }
       writeTerminalOutput(
         nodeID,
         payload.error

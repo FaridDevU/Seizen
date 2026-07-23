@@ -109,7 +109,7 @@ func (a *App) AskAssistant(chatID, prompt string) (AssistantChatReply, error) {
 	sort.SliceStable(active, func(i, j int) bool { return active[i].UpdatedAt > active[j].UpdatedAt })
 
 	system := assistantSystemPrompt(active)
-	return a.runAssistantTurn(config, chatID, prompt, "", system, assistantTools)
+	return a.runAssistantTurn(config, chatID, prompt, "", system, assistantTools, "")
 }
 
 // runAssistantTurn routes one chat turn to the configured provider, keeping the
@@ -117,7 +117,7 @@ func (a *App) AskAssistant(chatID, prompt string) (AssistantChatReply, error) {
 // (Home or a project workspace); tools is its API tool catalog, and the CLI
 // path derives a JSON protocol from the same catalog automatically via
 // cliProtocol. titlePrefix labels new chats (e.g. the project name).
-func (a *App) runAssistantTurn(config assistantStoredConfig, chatID, prompt, titlePrefix, system string, tools []anthropic.ToolUnionParam) (AssistantChatReply, error) {
+func (a *App) runAssistantTurn(config assistantStoredConfig, chatID, prompt, titlePrefix, system string, tools []anthropic.ToolUnionParam, projectDir string) (AssistantChatReply, error) {
 	provider := config.provider()
 	title := prompt
 	if titlePrefix != "" {
@@ -137,7 +137,7 @@ func (a *App) runAssistantTurn(config assistantStoredConfig, chatID, prompt, tit
 	if provider == "claude-cli" || provider == "codex-cli" {
 		var newSession string
 		cliSystem := system + cliProtocol(tools)
-		reply, newSession, err = a.askAssistantCLI(strings.TrimSuffix(provider, "-cli"), config.modelFor(provider), config.ClaudeOAuthToken, session, cliSystem, prompt)
+		reply, newSession, err = a.askAssistantCLI(strings.TrimSuffix(provider, "-cli"), config.modelFor(provider), config.ClaudeOAuthToken, session, cliSystem, prompt, projectDir)
 		if err == nil {
 			_ = a.setAssistantChatSession(a.context(), chat.ID, provider, newSession)
 		}
@@ -254,7 +254,7 @@ func (a *App) askAssistantAPI(config assistantStoredConfig, system string, tools
 // headless conversational turn: no API key involved, the model plans actions as
 // a JSON object we parse and hand to the frontend. session resumes the chat's
 // prior turns; the returned session id continues it next time.
-func (a *App) askAssistantCLI(agent, model, token, session, system, prompt string) (AssistantReply, string, error) {
+func (a *App) askAssistantCLI(agent, model, token, session, system, prompt, projectDir string) (AssistantReply, string, error) {
 	settings, err := a.GetAgentResourceSettings()
 	if err != nil {
 		settings = AgentResourceSettings{}
@@ -263,7 +263,7 @@ func (a *App) askAssistantCLI(agent, model, token, session, system, prompt strin
 	if agent == "codex" {
 		environment = settings.CodexEnvironment
 	}
-	raw, newSession, err := runAssistantCLI(a.context(), agent, environment, model, system, prompt, token, session)
+	raw, newSession, err := runAssistantCLI(a.context(), agent, environment, model, system, prompt, token, session, projectDir)
 	if err != nil {
 		return AssistantReply{}, "", err
 	}

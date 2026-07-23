@@ -17,6 +17,6 @@ func assistantCodexCLIModels() ([]AssistantModel, error) {
 	return nil, errors.New("subscription providers are Windows-only for now")
 }
 
-func runAssistantCLI(context.Context, string, string, string, string, string, string, string) (string, string, error) {
+func runAssistantCLI(context.Context, string, string, string, string, string, string, string, string) (string, string, error) {
 	return "", "", errors.New("subscription providers are Windows-only for now")
 }

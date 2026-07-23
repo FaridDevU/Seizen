@@ -123,13 +123,21 @@ const createNoWindow = 0x08000000
 // chat later. The process dies after every turn: the CLI's own session files
 // are the chat's memory, so nothing stays running in the background. token is
 // the long-lived Claude subscription token from the in-app sign-in ("" for
-// codex or profile logins).
-func runAssistantCLI(ctx context.Context, agent, environment, model, system, prompt, token, session string) (string, string, error) {
+// codex or profile logins). projectDir != "" runs the turn inside that folder
+// with read-only code tools enabled and a bigger turn budget, so the model can
+// analyze the project itself.
+func runAssistantCLI(ctx context.Context, agent, environment, model, system, prompt, token, session, projectDir string) (string, string, error) {
 	claudeExe, codexExe, home, codexBin, claudeBin, codexProfile, claudeProfile, err := assistantAgentPaths()
 	if err != nil {
 		return "", "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	workdir, maxTurns, disallowed := home, "1", assistantConversationalDisallowed
+	timeout := 3 * time.Minute
+	if projectDir != "" {
+		workdir, maxTurns, disallowed = projectDir, "16", assistantWorkspaceDisallowed
+		timeout = 6 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	hostExe := claudeExe
@@ -145,7 +153,7 @@ func runAssistantCLI(ctx context.Context, agent, environment, model, system, pro
 			if session != "" {
 				args = append(args, "resume", session)
 			}
-			args = append(args, "--json", "--skip-git-repo-check", "--color", "never", "-C", home, "-s", "read-only")
+			args = append(args, "--json", "--skip-git-repo-check", "--color", "never", "-C", workdir, "-s", "read-only")
 			if model != "" {
 				args = append(args, "-m", model)
 			}
@@ -153,7 +161,7 @@ func runAssistantCLI(ctx context.Context, agent, environment, model, system, pro
 			cmd = exec.CommandContext(ctx, hostExe, args...)
 		} else {
 			args := []string{"-p", "--output-format", "stream-json", "--verbose",
-				"--max-turns", "1", "--disallowedTools", assistantConversationalDisallowed,
+				"--max-turns", maxTurns, "--disallowedTools", disallowed,
 				"--append-system-prompt", system}
 			if session != "" {
 				args = append(args, "--resume", session)
@@ -164,7 +172,7 @@ func runAssistantCLI(ctx context.Context, agent, environment, model, system, pro
 			cmd = exec.CommandContext(ctx, hostExe, args...)
 			cmd.Stdin = strings.NewReader(prompt)
 		}
-		cmd.Dir = home
+		cmd.Dir = workdir
 		cmd.Env = managedAgentEnvironment(os.Environ(), home, codexBin, claudeBin, codexProfile, claudeProfile)
 		if agent == "claude" && token != "" {
 			cmd.Env = append(cmd.Env, "CLAUDE_CODE_OAUTH_TOKEN="+token)
@@ -201,6 +209,13 @@ func runAssistantCLI(ctx context.Context, agent, environment, model, system, pro
 	if agent == "claude" && token != "" {
 		script += "export CLAUDE_CODE_OAUTH_TOKEN=" + shellLiteral(token) + "; "
 	}
+	if projectDir != "" {
+		projectWSL, pathErr := windowsPathToWSL(projectDir)
+		if pathErr != nil {
+			return "", "", pathErr
+		}
+		script += "cd " + shellLiteral(projectWSL) + " || exit 87; "
+	}
 	var stdin string
 	if agent == "codex" {
 		arguments := "exec"
@@ -213,8 +228,8 @@ func runAssistantCLI(ctx context.Context, agent, environment, model, system, pro
 		}
 		script += "exec codex " + arguments + " " + shellLiteral(system+"\n\n"+prompt) + " < /dev/null"
 	} else {
-		arguments := "-p --output-format stream-json --verbose --max-turns 1" +
-			" --disallowedTools " + shellLiteral(assistantConversationalDisallowed) +
+		arguments := "-p --output-format stream-json --verbose --max-turns " + maxTurns +
+			" --disallowedTools " + shellLiteral(disallowed) +
 			" --append-system-prompt " + shellLiteral(system)
 		if session != "" {
 			arguments += " --resume " + shellLiteral(session)

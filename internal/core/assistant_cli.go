@@ -21,6 +21,15 @@ var assistantConversationalDisallowed = strings.Join([]string{
 	"ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 }, ",")
 
+// Workspace turns run inside the project folder with read-only code access:
+// Read/Glob/Grep stay enabled so the assistant can analyze the code itself;
+// anything that mutates or reaches the network stays off.
+var assistantWorkspaceDisallowed = strings.Join([]string{
+	"Task", "Bash", "BashOutput", "KillShell", "Edit", "Write",
+	"MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "PowerShell", "Skill",
+	"ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+}, ",")
+
 // parseClaudeHeadlessResult scans `claude -p --output-format stream-json` output
 // for the final result event and returns its text plus the session id that a
 // later turn can --resume.
