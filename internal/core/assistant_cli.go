@@ -17,7 +17,7 @@ import (
 // reply comes back as text instead of a tool_use that would burn the turn budget.
 var assistantConversationalDisallowed = strings.Join([]string{
 	"Task", "Bash", "BashOutput", "KillShell", "Glob", "Grep", "Read", "Edit", "Write",
-	"MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "PowerShell", "Skill",
+	"NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "PowerShell", "Skill",
 	"ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 }, ",")
 
@@ -26,7 +26,7 @@ var assistantConversationalDisallowed = strings.Join([]string{
 // anything that mutates or reaches the network stays off.
 var assistantWorkspaceDisallowed = strings.Join([]string{
 	"Task", "Bash", "BashOutput", "KillShell", "Edit", "Write",
-	"MultiEdit", "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "PowerShell", "Skill",
+	"NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "PowerShell", "Skill",
 	"ToolSearch", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 }, ",")
 

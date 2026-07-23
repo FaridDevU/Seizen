@@ -4941,52 +4941,6 @@ function assistantPhrase(tool: string): string | null {
   return null
 }
 
-const knownCommands = [
-  "cmd", "wsl", "codex", "claude", "opencode", "browser", "navegador",
-  "note", "nota", "todo", "tareas", "lista", "open", "abrir", "doc",
-  "documento", "tidy", "ordenar", "folder", "carpeta", "help", "ayuda",
-]
-
-// Nearest-verb hint: prefix/containment first, then a cheap edit distance for
-// one-typo cases ("noat" -> "nota"). Never a dead end.
-function suggestCommand(input: string): string | undefined {
-  if (!input) return undefined
-  const exact = knownCommands.find(
-    (candidate) => candidate.startsWith(input) || input.startsWith(candidate),
-  )
-  if (exact) return exact
-  let best: string | undefined
-  let bestDistance = 3
-  for (const candidate of knownCommands) {
-    if (Math.abs(candidate.length - input.length) >= bestDistance) continue
-    const distance = editDistance(input, candidate, bestDistance)
-    if (distance < bestDistance) {
-      bestDistance = distance
-      best = candidate
-    }
-  }
-  return best
-}
-
-function editDistance(a: string, b: string, cap: number) {
-  let previous = Array.from({ length: b.length + 1 }, (_, index) => index)
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i]
-    let rowMinimum = i
-    for (let j = 1; j <= b.length; j++) {
-      current[j] = Math.min(
-        previous[j] + 1,
-        current[j - 1] + 1,
-        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      )
-      rowMinimum = Math.min(rowMinimum, current[j])
-    }
-    if (rowMinimum >= cap) return cap
-    previous = current
-  }
-  return previous[b.length]
-}
-
 function EmptyCanvasAction({
   icon: Icon,
   children,
