@@ -17,3 +17,4 @@ nul
 
 # Análisis de Deska (referencia local, no versionar)
 Deska-Analisis/
+*.syso
