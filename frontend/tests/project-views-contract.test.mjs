@@ -267,3 +267,14 @@ test("Tools adds managed photos as persistent panels", async () => {
     "DeleteProjectWorkspacePhoto",
   ]) assert.match(service, new RegExp(method))
 })
+
+test("maximized panels stay escapable and Settings never suspends the workspace", async () => {
+  const workspace = await source("features/projects/ProjectWorkspace.tsx")
+  // The window-drag strip sits above the maximized panel's own header; if it
+  // keeps pointer events, the panel's Restore/Close buttons can never be clicked.
+  assert.match(workspace, /maximizedID && "pointer-events-none"/)
+  // Settings is an overlay: suspending here kills live terminal sessions while
+  // panels stay mounted as "running", so typing hits dead session ids.
+  assert.match(workspace, /runProjectMenuAction\(onOpenSettings\)/)
+  assert.doesNotMatch(workspace, /leaveWorkspace\(onOpenSettings\)/)
+})

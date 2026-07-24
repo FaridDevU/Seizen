@@ -2995,7 +2995,12 @@ function ProjectWorkspace({
             WindowToggleMaximise()
           }
         }}
-        className="window-drag absolute inset-x-0 top-0 z-[70] flex h-14 items-center justify-between px-3 sm:px-4"
+        className={cn(
+          "window-drag absolute inset-x-0 top-0 z-[70] flex h-14 items-center justify-between px-3 sm:px-4",
+          // A maximized panel puts its own Restore/Close buttons in this strip;
+          // the drag surface must let clicks fall through to them.
+          maximizedID && "pointer-events-none",
+        )}
       >
         <div className="pointer-events-auto flex min-w-0 items-center gap-2">
           <details
@@ -3072,7 +3077,7 @@ function ProjectWorkspace({
                 <span>Help</span>
               </ProjectMenuAction>
               <ProjectMenuAction
-                onClick={runProjectMenuAction(leaveWorkspace(onOpenSettings))}
+                onClick={runProjectMenuAction(onOpenSettings)}
               >
                 <Settings className="size-4" />
                 <span>Settings</span>
